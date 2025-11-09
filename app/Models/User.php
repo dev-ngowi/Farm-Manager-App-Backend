@@ -1,5 +1,7 @@
 <?php
 namespace App\Models;
+use App\Models\UserLocation;
+use App\Models\Location;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Spatie\Permission\Traits\HasRoles;
@@ -60,4 +62,31 @@ class User extends Authenticatable implements HasMedia
     {
         return $this->hasMany(MediaFolder::class);
     }
+
+    public function locations()
+{
+    return $this->belongsToMany(Location::class, 'user_locations')
+                ->using(UserLocation::class)
+                ->withPivot('id', 'is_primary', 'created_at', 'updated_at')
+                ->withTimestamps();
+}
+
+public function userLocations()
+{
+    return $this->hasMany(UserLocation::class);
+}
+
+public function primaryLocation()
+{
+    return $this->hasOne(UserLocation::class)
+                ->where('is_primary', true)
+                ->with('location');
+}
+
+public function addLocation(Location $location, bool $isPrimary = false)
+{
+    return $this->locations()->attach($location->id, [
+        'is_primary' => $isPrimary
+    ]);
+}
 }

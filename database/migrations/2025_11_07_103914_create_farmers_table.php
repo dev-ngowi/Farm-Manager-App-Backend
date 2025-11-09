@@ -12,7 +12,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('farmers', function (Blueprint $table) {
-            $table->id(); // BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY
+            $table->id();
 
             $table->foreignId('user_id')
                   ->unique()

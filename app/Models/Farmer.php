@@ -8,22 +8,24 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Farmer extends Model
 {
-    protected $primaryKey = 'id'; // assuming standard 'id' in farmers table
+    protected $primaryKey = 'id'; 
     public $incrementing = true;
     protected $keyType = 'int';
 
     protected $fillable = [
+        'user_id',
         'farm_name',
         'farm_purpose',
         'location_id',
         'total_land_acres',
         'years_experience',
+        'profile_photo', // ← ADD THIS
     ];
 
     protected $casts = [
-        'farm_purpose' => 'string',
         'total_land_acres' => 'decimal:2',
         'years_experience' => 'integer',
+        'profile_photo' => 'string',
     ];
 
     // =================================================================
@@ -182,5 +184,13 @@ class Farmer extends Model
     public function scopeDairyFocused($query)
     {
         return $query->where('farm_purpose', 'like', '%Dairy%');
+    }
+
+    public function getProfilePhotoUrlAttribute(): ?string
+    {
+        if ($this->profile_photo) {
+            return asset('storage/' . $this->profile_photo);
+        }
+        return asset('images/default-farmer-avatar.png'); // fallback
     }
 }

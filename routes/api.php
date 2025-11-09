@@ -4,6 +4,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\Auth\UserController;
 use App\Http\Controllers\Api\Shared\RoleController;
+use App\Http\Controllers\Api\Shared\LocationController;
 
 
 /*
@@ -52,6 +53,43 @@ Route::prefix('v1')->group(function () {
 
         //roles
         Route::get('/roles', [RoleController::class, 'index']);
+
+        // WARDS CRUD - CLEAR NAMING
+    Route::prefix('wards')->group(function () {
+        Route::get('/', [LocationController::class, 'indexWards']);
+        Route::post('/', [LocationController::class, 'storeWard']);
+        Route::get('/{id}', [LocationController::class, 'showWard']);
+        Route::put('/{id}', [LocationController::class, 'updateWard']);
+        Route::patch('/{id}', [LocationController::class, 'updateWard']);
+        Route::delete('/{id}', [LocationController::class, 'destroyWard']);
+    });
+    // Filter wards by parent
+    Route::get('/districts/{district_id}/wards', [LocationController::class, 'indexWards']);
+    Route::get('/regions/{region_id}/wards', [LocationController::class, 'indexWards']);
+
+    // REGIONS
+    Route::get('/regions', [LocationController::class, 'indexRegions']);
+
+    // DISTRICTS
+    Route::get('/districts', [LocationController::class, 'indexDistricts']);
+    Route::post('/districts', [LocationController::class, 'storeDistrict']);
+    Route::get('/regions/{region_id}/districts', [LocationController::class, 'indexDistricts']);
+
+
+    // LOCATION CRUD
+    Route::prefix('locations')->group(function () {
+        Route::get('/', [LocationController::class, 'indexLocations']);
+        Route::post('/', [LocationController::class, 'storeLocation']);
+        Route::get('/{id}', [LocationController::class, 'showLocation']);
+    });
+
+    // USER LOCATION ASSIGNMENT
+    Route::prefix('user-locations')->group(function () {
+        Route::get('/', [LocationController::class, 'indexUserLocations']);
+        Route::post('/', [LocationController::class, 'assignUserLocation']);
+        Route::patch('/{id}/primary', [LocationController::class, 'setPrimaryLocation']);
+        Route::delete('/{id}', [LocationController::class, 'removeUserLocation']);
+    });
 
     });
 });
