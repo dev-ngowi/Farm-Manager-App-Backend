@@ -5,10 +5,12 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
+use Illuminate\Database\Eloquent\Builder;
 
 class Farmer extends Model
 {
-    protected $primaryKey = 'id'; 
+    protected $primaryKey = 'id';
     public $incrementing = true;
     protected $keyType = 'int';
 
@@ -19,7 +21,7 @@ class Farmer extends Model
         'location_id',
         'total_land_acres',
         'years_experience',
-        'profile_photo', // ← ADD THIS
+        'profile_photo',
     ];
 
     protected $casts = [
@@ -31,7 +33,6 @@ class Farmer extends Model
     // =================================================================
     // CORE RELATIONSHIPS
     // =================================================================
-
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
@@ -45,48 +46,99 @@ class Farmer extends Model
     // =================================================================
     // LIVESTOCK & BREEDING
     // =================================================================
-
     public function livestock(): HasMany
     {
         return $this->hasMany(Livestock::class, 'farmer_id');
     }
 
-    public function breedingRecords(): HasMany
+    public function breedingRecords(): HasManyThrough
     {
-        return $this->hasManyThrough(BreedingRecord::class, Livestock::class, 'farmer_id', 'dam_id', 'id', 'animal_id');
+        return $this->hasManyThrough(
+            BreedingRecord::class,
+            Livestock::class,
+            'farmer_id',
+            'dam_id',
+            'id',
+            'animal_id'
+        );
     }
 
-    public function birthRecords(): HasMany
+    public function birthRecords(): HasManyThrough
     {
-        return $this->hasManyThrough(BirthRecord::class, Livestock::class, 'farmer_id', 'breeding_id', 'id', 'animal_id')
-                     ->join('breeding_records', 'birth_records.breeding_id', '=', 'breeding_records.breeding_id');
+        return $this->hasManyThrough(
+            BirthRecord::class,
+            Livestock::class,
+            'farmer_id',
+            'breeding_id',
+            'id',
+            'animal_id'
+        )->join('breeding_records', 'birth_records.breeding_id', '=', 'breeding_records.breeding_id');
     }
 
-    public function offspringRecords(): HasMany
+    public function offspringRecords(): HasManyThrough
     {
         return $this->hasManyThrough(OffspringRecord::class, BirthRecord::class, 'breeding_id', 'birth_id');
     }
 
     // =================================================================
+    // HEALTH & VETERINARY SERVICES (REAL TABLES FROM SCHEMA)
+    // =================================================================
+    public function healthReports(): HasMany
+    {
+        return $this->hasMany(HealthReport::class, 'farmer_id');
+    }
+
+    public function vetAppointments(): HasMany
+    {
+        return $this->hasMany(VetAppointment::class, 'farmer_id');
+    }
+
+    public function upcomingVetAppointments(): HasMany
+    {
+        return $this->vetAppointments()
+            ->where('appointment_date', '>=', now())
+            ->whereIn('status', ['Scheduled', 'Confirmed']);
+    }
+
+    public function chatConversations(): HasMany
+    {
+        return $this->hasMany(VetChatConversation::class, 'farmer_id');
+    }
+
+    public function activeChats(): HasMany
+    {
+        return $this->chatConversations()->where('status', 'Active');
+    }
+
+    public function aiRequests(): HasMany
+    {
+        return $this->hasMany(AIRequest::class, 'farmer_id');
+    }
+
+    public function extensionRequests(): HasMany
+    {
+        return $this->hasMany(ExtensionServiceRequest::class, 'farmer_id');
+    }
+
+    // =================================================================
     // PRODUCTION & EFFICIENCY
     // =================================================================
-
-    public function milkYields(): HasMany
+    public function milkYields(): HasManyThrough
     {
         return $this->hasManyThrough(MilkYieldRecord::class, Livestock::class, 'farmer_id', 'animal_id', 'id', 'animal_id');
     }
 
-    public function weightRecords(): HasMany
+    public function weightRecords(): HasManyThrough
     {
         return $this->hasManyThrough(WeightRecord::class, Livestock::class, 'farmer_id', 'animal_id', 'id', 'animal_id');
     }
 
-    public function feedIntakes(): HasMany
+    public function feedIntakes(): HasManyThrough
     {
         return $this->hasManyThrough(FeedIntakeRecord::class, Livestock::class, 'farmer_id', 'animal_id', 'id', 'animal_id');
     }
 
-    public function productionFactors(): HasMany
+    public function productionFactors(): HasManyThrough
     {
         return $this->hasManyThrough(ProductionFactor::class, Livestock::class, 'farmer_id', 'animal_id', 'id', 'animal_id');
     }
@@ -94,7 +146,6 @@ class Farmer extends Model
     // =================================================================
     // FINANCIAL MODULE
     // =================================================================
-
     public function expenses(): HasMany
     {
         return $this->hasMany(Expense::class, 'farmer_id');
@@ -106,9 +157,8 @@ class Farmer extends Model
     }
 
     // =================================================================
-    // HELPFUL ACCESSORS & SCOPES
+    // DASHBOARD ACCESSORS (FIXED & OPTIMIZED)
     // =================================================================
-
     public function getFullAddressAttribute(): string
     {
         return $this->location?->full_address ?? 'No location set';
@@ -120,17 +170,15 @@ class Farmer extends Model
             $this->years_experience >= 10 => 'Veteran',
             $this->years_experience >= 5  => 'Experienced',
             $this->years_experience >= 1  => 'Beginner',
-            default => 'New Farmer',
+            default                       => 'New Farmer',
         };
     }
 
-    // Total animals
     public function getTotalAnimalsAttribute(): int
     {
         return $this->livestock()->count();
     }
 
-    // Active milking cows
     public function getMilkingCowsCountAttribute(): int
     {
         return $this->livestock()
@@ -140,24 +188,27 @@ class Farmer extends Model
             ->count();
     }
 
-    // Today's milk income
     public function getTodayMilkIncomeAttribute(): float
     {
-        return $this->income()
-            ->where('income_date', today())
-            ->whereHas('category', fn($q) => $q->where('category_name', 'Milk Sale'))
+        $milkCategoryId = cache()->remember('milk_sale_category_id', now()->addHours(6), fn() =>
+            IncomeCategory::where('category_name', 'Milk Sale')->value('id') ?? 0
+        );
+
+        if (!$milkCategoryId) return 0.0;
+
+        return (float) $this->income()
+            ->where('category_id', $milkCategoryId)
+            ->whereDate('income_date', today())
             ->sum('amount');
     }
 
-    // This month's profit
     public function getMonthlyProfitAttribute(): float
     {
         $income = $this->income()->thisMonth()->sum('amount');
         $expenses = $this->expenses()->thisMonth()->sum('amount');
-        return $income - $expenses;
+        return round($income - $expenses, 2);
     }
 
-    // Top earning animal
     public function getTopEarnerAttribute()
     {
         return $this->livestock()
@@ -166,7 +217,6 @@ class Farmer extends Model
             ->first();
     }
 
-    // Most expensive animal to maintain
     public function getCostliestAnimalAttribute()
     {
         return $this->livestock()
@@ -175,22 +225,32 @@ class Farmer extends Model
             ->first();
     }
 
-    // Scopes
-    public function scopeLargeScale($query)
+    public function getProfilePhotoUrlAttribute(): ?string
+    {
+        return $this->profile_photo
+            ? asset('storage/' . $this->profile_photo)
+            : asset('images/default-farmer-avatar.png');
+    }
+
+    // NEW: Combined pending requests count (replaces fake serviceRequests)
+    public function getPendingRequestsCountAttribute(): int
+    {
+        return $this->healthReports()->where('status', 'Pending Diagnosis')->count()
+             + $this->vetAppointments()->where('status', 'Scheduled')->count()
+             + $this->aiRequests()->where('status', 'Pending')->count()
+             + $this->extensionRequests()->where('status', 'Pending')->count();
+    }
+
+    // =================================================================
+    // SCOPES
+    // =================================================================
+    public function scopeLargeScale(Builder $query): Builder
     {
         return $query->where('total_land_acres', '>=', 50);
     }
 
-    public function scopeDairyFocused($query)
+    public function scopeDairyFocused(Builder $query): Builder
     {
         return $query->where('farm_purpose', 'like', '%Dairy%');
-    }
-
-    public function getProfilePhotoUrlAttribute(): ?string
-    {
-        if ($this->profile_photo) {
-            return asset('storage/' . $this->profile_photo);
-        }
-        return asset('images/default-farmer-avatar.png'); // fallback
     }
 }

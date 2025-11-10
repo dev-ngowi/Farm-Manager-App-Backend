@@ -65,7 +65,7 @@ class Livestock extends Model
 
     public function species(): BelongsTo
     {
-        return $this->belongsTo(Species::class, 'species_id', 'species_id');
+        return $this->belongsTo(Species::class, 'species_id', 'id');
     }
 
     public function breed(): BelongsTo
@@ -313,37 +313,58 @@ class Livestock extends Model
 
     public function scopePregnant($query)
     {
-        return $query->whereHas('breedingAsDam', fn($q) => 
+        return $query->whereHas('breedingAsDam', fn($q) =>
             $q->where('status', 'Confirmed Pregnant')
         );
     }
 
     public function scopeDueSoon($query, $days = 14)
     {
-        return $query->whereHas('breedingAsDam', fn($q) => 
+        return $query->whereHas('breedingAsDam', fn($q) =>
             $q->whereBetween('expected_delivery_date', [now(), now()->addDays($days)])
         );
     }
 
     public function scopeMarketReady($query)
     {
-        return $query->whereRaw('(current_weight_kg >= CASE 
-            WHEN species_id = 1 THEN 450 
-            WHEN species_id = 2 THEN 35 
+        return $query->whereRaw('(current_weight_kg >= CASE
+            WHEN species_id = 1 THEN 450
+            WHEN species_id = 2 THEN 35
             ELSE 100 END)');
     }
 
     public function scopeProfitable($query)
     {
-        return $query->whereHas('income', fn($q) => 
+        return $query->whereHas('income', fn($q) =>
             $q->selectRaw('animal_id, SUM(amount) as total_income')
               ->groupBy('animal_id')
               ->havingRaw('total_income > (
                   SELECT COALESCE(SUM(amount), 0) + COALESCE(purchase_cost, 0)
-                  FROM expenses e2 
+                  FROM expenses e2
                   LEFT JOIN livestock l2 ON e2.animal_id = l2.animal_id
                   WHERE e2.animal_id = livestock.animal_id
               )')
         );
     }
+
+    // In app/Models/Livestock.php
+
+public function vaccinationSchedules()
+{
+    return $this->hasMany(VaccinationSchedule::class, 'animal_id');
+}
+
+public function upcomingVaccines()
+{
+    return $this->vaccinationSchedules()->upcoming();
+}
+
+public function missedVaccines()
+{
+    return $this->vaccinationSchedules()->missed();
+}
+public function vetAppointments()
+{
+    return $this->hasMany(VetAppointment::class, 'animal_id');
+}
 }

@@ -19,65 +19,73 @@ use Illuminate\Support\Facades\Log;
 
 class UserController extends Controller
 {
+    // Define the roles that must strictly use email for login
     private $strict_roles = ['Vet', 'Researcher', 'Admin'];
 
     /**
-     * Helper function to get conditional validation rules.
+     * Generates a unique username based on the user's last name and phone number.
+     *
+     * @param string $lastname
+     * @param string $phone
+     * @return string
+     */
+    private function generateUsername(string $lastname, string $phone): string
+    {
+        $cleanLastname = strtolower(preg_replace('/[^a-z0-9]/i', '', $lastname));
+        $cleanPhone = preg_replace('/[^0-9]/', '', $phone);
+
+        $base = $cleanLastname . $cleanPhone;
+        $username = $base;
+        $counter = 1;
+
+        while (User::where('username', $username)->exists()) {
+            $username = $base . $counter;
+            $counter++;
+        }
+
+        return $username;
+    }
+
+    // ---
+    // VALIDATION RULES
+    // ---
+    /**
+     * Get the validation rules for user creation or update.
+     *
+     * @param Request $request
+     * @param User|null $user
+     * @return array
      */
     private function getValidationRules(Request $request, ?User $user = null): array
     {
         $is_update = !is_null($user);
         $role_name = $request->input('role');
+        if ($is_update && !$role_name) {
+            $role_name = $user->getRoleNames()->first();
+        }
         $is_strict_role = in_array($role_name, $this->strict_roles);
 
-        // --- Email Rules ---
-        $email_rules = [
-            'string',
-            'lowercase',
-            'email',
-            'max:255',
-            Rule::unique(User::class)->ignore($user->id ?? null),
-        ];
-        if ($is_strict_role) {
-            array_unshift($email_rules, 'required');
+        $email_rules = ['string', 'lowercase', 'email', 'max:255'];
+        if ($is_strict_role || ($is_update && $user?->hasAnyRole($this->strict_roles))) {
+            $email_rules[] = 'required';
         } else {
-            array_unshift($email_rules, 'nullable');
+            $email_rules[] = 'nullable';
         }
+        $email_rules[] = Rule::unique(User::class)->ignore($user?->id);
 
-        if ($is_update && !$role_name) {
-            if ($user->hasAnyRole($this->strict_roles)) {
-                array_unshift($email_rules, 'required');
-            } else {
-                array_unshift($email_rules, 'nullable');
-            }
-        }
-
-        // --- Phone Number Rules ---
-        $phone_rules = [
-            'string',
-            'max:20',
-            Rule::unique(User::class, 'phone_number')->ignore($user->id ?? null, 'phone_number'),
-        ];
-
-        if ($is_strict_role) {
-            array_unshift($phone_rules, 'required');
+        $phone_rules = ['string', 'max:20'];
+        if ($is_strict_role || ($is_update && $user?->hasAnyRole($this->strict_roles))) {
+            $phone_rules[] = 'required';
         } else {
-            array_unshift($phone_rules, 'nullable');
+            $phone_rules[] = 'nullable';
         }
+        $phone_rules[] = Rule::unique(User::class, 'phone_number')->ignore($user?->id);
 
-        if ($is_update && !$role_name) {
-            if ($user->hasAnyRole($this->strict_roles)) {
-                array_unshift($phone_rules, 'required');
-            } else {
-                array_unshift($phone_rules, 'nullable');
-            }
-        }
-
-        // --- Base Rules ---
         $rules = [
             'firstname' => 'required|string|max:100',
             'lastname' => 'required|string|max:100',
-            'role' => 'nullable|string|exists:roles,name',
+            'role' => $is_update ? 'nullable' : 'required',
+            'role.*' => 'string|exists:roles,name',
             'email' => $email_rules,
             'phone_number' => $phone_rules,
             'password' => $is_update
@@ -85,58 +93,66 @@ class UserController extends Controller
                 : ['required', 'confirmed', Rules\Password::defaults()],
         ];
 
-        if (!$is_update) {
-            $rules['role'] = 'required|string|exists:roles,name';
-        }
-
         return $rules;
     }
 
+    // ---
+    // FORMAT USER RESPONSE
+    // ---
     /**
-     * Helper function to format user data for response.
+     * Formats the user data for API responses.
+     *
+     * @param User $user
+     * @param bool $include_timestamps
+     * @return array
      */
     private function formatUserData(User $user, bool $include_timestamps = false): array
     {
-        $user_data = $user->only(['id', 'firstname', 'lastname', 'email', 'phone_number', 'is_active']);
-        $user_data['role'] = $user->getRoleNames()->first();
-        
+        $data = $user->only(['id', 'firstname', 'lastname', 'email', 'phone_number', 'username', 'is_active']);
+        $data['role'] = $user->getRoleNames()->first();
+
         if ($include_timestamps) {
-            $user_data['created_at'] = $user->created_at;
-            $user_data['last_login'] = $user->last_login;
+            $data['created_at'] = $user->created_at;
+            $data['last_login'] = $user->last_login;
         }
 
-        return $user_data;
+        return $data;
     }
 
-    // ==================================
-    // C - CREATE (Registration)
-    // ==================================
+    // ---
+    // REGISTER
+    // ---
     public function store(Request $request): JsonResponse
     {
         try {
             $request->validate($this->getValidationRules($request));
 
-            $email = $request->email ?? null;
-            $phone_number = $request->phone_number ?? null;
             $role_name = $request->input('role', 'Farmer');
+            $phone_number = $request->phone_number;
 
-            $user = User::create([
-                'firstname' => $request->firstname,
-                'lastname' => $request->lastname,
-                'name' => $request->firstname . ' ' . $request->lastname,
+            $username = $this->generateUsername($request->lastname, $phone_number);
+
+            $userData = [
+                'firstname'    => $request->firstname,
+                'lastname'     => $request->lastname,
+                'username'     => $username,
                 'phone_number' => $phone_number,
-                'email' => $email,
-                'password' => Hash::make($request->password),
-                'is_active' => true,
-                'last_login' => now(),
-            ]);
+                'password'     => Hash::make($request->password),
+                'is_active'    => true,
+                'last_login'   => now(),
+            ];
 
-            $role = Role::where('name', $role_name)->first();
-            if ($role) {
-                $user->assignRole($role);
+            // Only add email if provided or if role requires it
+            if ($role_name !== 'Farmer' || $request->filled('email')) {
+                $userData['email'] = $request->email;
             }
 
-           $userRole = UserRole::create([
+            $user = User::create($userData);
+
+            $role = Role::where('name', $role_name)->firstOrFail();
+            $user->assignRole($role);
+
+            UserRole::create([
                 'user_id' => $user->id,
                 'role_id' => $role->id
             ]);
@@ -145,41 +161,42 @@ class UserController extends Controller
             $token = $user->createToken('auth_token')->plainTextToken;
 
             return response()->json([
-                'status' => 'success',
-                'code' => Response::HTTP_CREATED,
-                'message' => 'User successfully registered.',
-                'data' => [
-                    'user' => $this->formatUserData($user),
+                'status'  => 'success',
+                'code'    => Response::HTTP_CREATED,
+                'message' => 'User registered successfully.',
+                'data'    => [
+                    'user'         => $this->formatUserData($user),
                     'access_token' => $token,
-                    'token_type' => 'Bearer',
+                    'token_type'   => 'Bearer',
                 ],
             ], Response::HTTP_CREATED);
 
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
-                'status' => 'error',
-                'code' => Response::HTTP_UNPROCESSABLE_ENTITY,
+                'status'  => 'error',
+                'code'    => Response::HTTP_UNPROCESSABLE_ENTITY,
                 'message' => 'Validation failed.',
-                'errors' => $e->errors(),
+                'errors'  => $e->errors(),
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
+
         } catch (Exception $e) {
             Log::error('Registration error: ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString(),
+                'trace'   => $e->getTraceAsString(),
                 'request' => $request->except(['password', 'password_confirmation'])
             ]);
-            
+
             return response()->json([
-                'status' => 'error',
-                'code' => Response::HTTP_INTERNAL_SERVER_ERROR,
-                'message' => 'An error occurred during registration.',
-                'debug' => config('app.debug') ? $e->getMessage() : null,
+                'status'  => 'error',
+                'code'    => Response::HTTP_INTERNAL_SERVER_ERROR,
+                'message' => 'Registration failed. Please try again.',
+                'debug'   => config('app.debug') ? $e->getMessage() : null,
             ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
     }
 
-    // ==================================
+    // ---
     // R - READ (List Users + Token)
-    // ==================================
+    // ---
     public function index(Request $request): JsonResponse
     {
         try {
@@ -203,7 +220,7 @@ class UserController extends Controller
             Log::error('Failed to retrieve users: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString()
             ]);
-            
+
             return response()->json([
                 'status' => 'error',
                 'code' => Response::HTTP_INTERNAL_SERVER_ERROR,
@@ -213,9 +230,9 @@ class UserController extends Controller
         }
     }
 
-    // ==================================
+    // ---
     // R - READ (Single User)
-    // ==================================
+    // ---
     public function show(User $user): JsonResponse
     {
         try {
@@ -233,7 +250,7 @@ class UserController extends Controller
                 'trace' => $e->getTraceAsString(),
                 'user_id' => $user->id ?? null
             ]);
-            
+
             return response()->json([
                 'status' => 'error',
                 'code' => Response::HTTP_INTERNAL_SERVER_ERROR,
@@ -243,9 +260,9 @@ class UserController extends Controller
         }
     }
 
-    // ==================================
+    // ---
     // U - UPDATE
-    // ==================================
+    // ---
     public function update(Request $request, User $user): JsonResponse
     {
         try {
@@ -258,23 +275,22 @@ class UserController extends Controller
                 $data['password'] = Hash::make($request->password);
             }
 
-            if ($request->filled('firstname') || $request->filled('lastname')) {
-                $data['name'] = ($request->firstname ?? $user->firstname) . ' ' . ($request->lastname ?? $user->lastname);
-            }
-
             $role_name = $request->input('role') ?? $user->getRoleNames()->first();
             $is_strict_role = in_array($role_name, $this->strict_roles);
 
+            // Conditional clearing of fields for non-strict roles (Farmers)
             if (!$is_strict_role) {
-                if (!$request->filled('email')) $data['email'] = null;
-                if (!$request->filled('phone_number')) $data['phone_number'] = null;
+                // If a Farmer is being updated and 'email' is explicitly null in the request, set it to null
+                if ($request->has('email') && $request->input('email') === null) $data['email'] = null;
+                // If a Farmer is being updated and 'phone_number' is explicitly null in the request, set it to null
+                if ($request->has('phone_number') && $request->input('phone_number') === null) $data['phone_number'] = null;
             }
 
             $user->update($data);
 
             if ($request->filled('role')) {
                 $new_role = Role::where('name', $request->role)->first();
-                if ($new_role && !$user->hasRole($new_role)) {
+                if ($new_role && !$user->hasRole($new_role->name)) {
                     $user->syncRoles([$new_role]);
                 }
             }
@@ -299,7 +315,7 @@ class UserController extends Controller
                 'user_id' => $user->id ?? null,
                 'request' => $request->except(['password', 'password_confirmation'])
             ]);
-            
+
             return response()->json([
                 'status' => 'error',
                 'code' => Response::HTTP_INTERNAL_SERVER_ERROR,
@@ -309,9 +325,9 @@ class UserController extends Controller
         }
     }
 
-    // ==================================
+    // ---
     // D - DELETE
-    // ==================================
+    // ---
     public function destroy(User $user): JsonResponse
     {
         try {
@@ -330,7 +346,7 @@ class UserController extends Controller
                 'trace' => $e->getTraceAsString(),
                 'user_id' => $user->id ?? null
             ]);
-            
+
             return response()->json([
                 'status' => 'error',
                 'code' => Response::HTTP_INTERNAL_SERVER_ERROR,
@@ -340,76 +356,103 @@ class UserController extends Controller
         }
     }
 
-    // ==================================
-    // LOGIN
-    // ==================================
+
     public function login(Request $request): JsonResponse
-    {
-        try {
-            $request->validate([
-                'email' => 'required|email',
-                'password' => 'required|string',
-            ]);
+{
+    try {
+        $request->validate([
+            'login'    => 'required|string',
+            'password' => 'required|string',
+        ]);
 
-            $user = User::with('roles:id,name')->where('email', $request->email)->first();
+        $loginInput = $request->login;
+        $user = null;
 
-            if (!$user || !Hash::check($request->password, $user->password)) {
+        // Search by phone, email, or username to find the user
+        $user = User::with('roles')->where(function ($query) use ($loginInput) {
+            $query->where('phone_number', $loginInput)
+                  ->orWhere('email', $loginInput)
+                  ->orWhere('username', $loginInput);
+        })->first();
+
+        // Authentication Failure (Credentials or User Not Found)
+        if (!$user || !Hash::check($request->password, $user->password)) {
+            return response()->json([
+                'status'  => 'error',
+                'code'    => Response::HTTP_UNAUTHORIZED,
+                'message' => 'Invalid credentials.',
+            ], Response::HTTP_UNAUTHORIZED);
+        }
+
+        // Account Status Check
+        if (!$user->is_active) {
+            return response()->json([
+                'status'  => 'error',
+                'code'    => Response::HTTP_FORBIDDEN,
+                'message' => 'Account deactivated. Contact admin.',
+            ], Response::HTTP_FORBIDDEN);
+        }
+
+        $userRole = $user->getRoleNames()->first();
+
+        // === ROLE-BASED LOGIN ENFORCEMENT ===
+
+        // Check if the user has a strict role (Admin, Vet, Researcher)
+        if (in_array($userRole, $this->strict_roles)) {
+            // Strict roles MUST login using email only
+            $isLoginInputEmail = ($loginInput === $user->email && !is_null($user->email));
+
+            if (!$isLoginInputEmail) {
                 return response()->json([
-                    'status' => 'error',
-                    'code' => Response::HTTP_UNAUTHORIZED,
-                    'message' => 'Invalid credentials.',
+                    'status'  => 'error',
+                    'code'    => Response::HTTP_UNAUTHORIZED,
+                    'message' => 'Please log in using your email address.',
                 ], Response::HTTP_UNAUTHORIZED);
             }
-
-            if (!$user->is_active) {
-                return response()->json([
-                    'status' => 'error',
-                    'code' => Response::HTTP_FORBIDDEN,
-                    'message' => 'Account is deactivated.',
-                ], Response::HTTP_FORBIDDEN);
-            }
-
-            $user->last_login = now();
-            $user->save();
-
-            $token = $user->createToken('auth_token')->plainTextToken;
-
-            return response()->json([
-                'status' => 'success',
-                'code' => Response::HTTP_OK,
-                'message' => 'Login successful.',
-                'data' => [
-                    'user' => $this->formatUserData($user),
-                    'access_token' => $token,
-                    'token_type' => 'Bearer',
-                ],
-            ], Response::HTTP_OK);
-
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'status' => 'error',
-                'code' => Response::HTTP_UNPROCESSABLE_ENTITY,
-                'message' => 'Validation failed.',
-                'errors' => $e->errors(),
-            ], Response::HTTP_UNPROCESSABLE_ENTITY);
-        } catch (Exception $e) {
-            Log::error('Login error: ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString(),
-                'email' => $request->email ?? 'not provided'
-            ]);
-            
-            return response()->json([
-                'status' => 'error',
-                'code' => Response::HTTP_INTERNAL_SERVER_ERROR,
-                'message' => 'Login failed.',
-                'debug' => config('app.debug') ? $e->getMessage() : null,
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
-    }
 
-    // ==================================
+        // FARMER ROLE: Can login with phone, email, or username
+        // No additional restrictions - they've already been authenticated above
+
+        // === END ENFORCEMENT ===
+
+        // Update last login time
+        $user->update(['last_login' => now()]);
+
+        // Generate access token
+        $token = $user->createToken('auth_token')->plainTextToken;
+
+        return response()->json([
+            'status'  => 'success',
+            'code'    => Response::HTTP_OK,
+            'message' => 'Login successful.',
+            'data'    => [
+                'user'         => $this->formatUserData($user),
+                'access_token' => $token,
+                'token_type'   => 'Bearer',
+            ],
+        ]);
+
+    } catch (\Illuminate\Validation\ValidationException $e) {
+        return response()->json([
+            'status'  => 'error',
+            'code'    => Response::HTTP_UNPROCESSABLE_ENTITY,
+            'message' => 'Please enter your phone number or email.',
+            'errors'  => $e->errors(),
+        ], Response::HTTP_UNPROCESSABLE_ENTITY);
+
+    } catch (Exception $e) {
+        Log::error('Login error: ' . $e->getMessage());
+        return response()->json([
+            'status'  => 'error',
+            'code'    => Response::HTTP_INTERNAL_SERVER_ERROR,
+            'message' => 'Login failed. Try again.',
+        ], Response::HTTP_INTERNAL_SERVER_ERROR);
+    }
+}
+    // ---
     // LOGOUT
-    // ==================================
+    // ---
     public function logout(Request $request): JsonResponse
     {
         try {
@@ -426,7 +469,7 @@ class UserController extends Controller
                 'trace' => $e->getTraceAsString(),
                 'user_id' => $request->user()->id ?? null
             ]);
-            
+
             return response()->json([
                 'status' => 'error',
                 'code' => Response::HTTP_INTERNAL_SERVER_ERROR,
@@ -436,9 +479,9 @@ class UserController extends Controller
         }
     }
 
-    // ==================================
+    // ---
     // REQUEST PASSWORD RESET OTP
-    // ==================================
+    // ---
     public function requestPasswordReset(Request $request): JsonResponse
     {
         try {
@@ -471,7 +514,7 @@ class UserController extends Controller
                 'trace' => $e->getTraceAsString(),
                 'email' => $request->email ?? 'not provided'
             ]);
-            
+
             return response()->json([
                 'status' => 'error',
                 'code' => Response::HTTP_INTERNAL_SERVER_ERROR,
@@ -481,9 +524,9 @@ class UserController extends Controller
         }
     }
 
-    // ==================================
+    // ---
     // VERIFY OTP & RESET PASSWORD
-    // ==================================
+    // ---
     public function resetPassword(Request $request): JsonResponse
     {
         try {
@@ -527,7 +570,7 @@ class UserController extends Controller
                 'trace' => $e->getTraceAsString(),
                 'email' => $request->email ?? 'not provided'
             ]);
-            
+
             return response()->json([
                 'status' => 'error',
                 'code' => Response::HTTP_INTERNAL_SERVER_ERROR,

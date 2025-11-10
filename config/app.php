@@ -1,5 +1,8 @@
 <?php
 
+use Illuminate\Support\Facades\Facade;
+use Illuminate\Support\ServiceProvider;
+
 return [
 
     /*
@@ -7,9 +10,9 @@ return [
     | Application Name
     |--------------------------------------------------------------------------
     |
-    | This value is the name of your application, which will be used when the
+    | This value is the name of your application. This value is used when the
     | framework needs to place the application's name in a notification or
-    | other UI elements where an application name needs to be displayed.
+    | any other location as required by the application or its packages.
     |
     */
 
@@ -22,7 +25,7 @@ return [
     |
     | This value determines the "environment" your application is currently
     | running in. This may determine how you prefer to configure various
-    | services the application utilizes. Set this in your ".env" file.
+    | services the application uses. Set this in your ".env" file.
     |
     */
 
@@ -48,7 +51,7 @@ return [
     |
     | This URL is used by the console to properly generate URLs when using
     | the Artisan command line tool. You should set this to the root of
-    | the application so that it's available within Artisan commands.
+    | the application so that it is available within Artisan commands.
     |
     */
 
@@ -56,16 +59,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Asset URL
+    |--------------------------------------------------------------------------
+    |
+    | If your application serves assets from a different domain (e.g. CDN),
+    | you may specify the asset URL here.
+    |
+    */
+
+    'asset_url' => env('ASSET_URL'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Timezone
     |--------------------------------------------------------------------------
     |
     | Here you may specify the default timezone for your application, which
-    | will be used by the PHP date and date-time functions. The timezone
-    | is set to "UTC" by default as it is suitable for most use cases.
+    | will be used by the PHP date and date-time functions.
+    |
+    | Tanzania uses East Africa Time (EAT) → Africa/Dar_es_Salaam
     |
     */
 
-    'timezone' => env('APP_TIMEZONE', 'UTC'),
+    'timezone' => env('APP_TIMEZONE', 'Africa/Dar_es_Salaam'),
 
     /*
     |--------------------------------------------------------------------------
@@ -73,14 +89,36 @@ return [
     |--------------------------------------------------------------------------
     |
     | The application locale determines the default locale that will be used
-    | by Laravel's translation / localization methods. This option can be
-    | set to any locale for which you plan to have translation strings.
+    | by the translation service provider. You are free to set this value
+    | to any of the locales which will be supported by the application.
     |
     */
 
     'locale' => env('APP_LOCALE', 'en'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Application Fallback Locale
+    |--------------------------------------------------------------------------
+    |
+    | The fallback locale determines the locale to use when the current one
+    | is not available. You may change the value to correspond to any of
+    | the language folders that are provided through your application.
+    |
+    */
+
     'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Faker Locale
+    |--------------------------------------------------------------------------
+    |
+    | This locale will be used by the Faker PHP library when generating fake
+    | data for your database seeds. For example, this will be used to get
+    | localized telephone numbers, street address information and more.
+    |
+    */
 
     'faker_locale' => env('APP_FAKER_LOCALE', 'en_US'),
 
@@ -89,38 +127,83 @@ return [
     | Encryption Key
     |--------------------------------------------------------------------------
     |
-    | This key is utilized by Laravel's encryption services and should be set
-    | to a random, 32 character string to ensure that all encrypted values
-    | are secure. You should do this prior to deploying the application.
+    | This key is used by the Illuminate encrypter service and should be set
+    | to a random, 32-character string. Otherwise, encrypted values will not
+    | be secure. Run "php artisan key:generate" to create one.
     |
     */
-
-    'cipher' => 'AES-256-CBC',
 
     'key' => env('APP_KEY'),
 
     'previous_keys' => [
-        ...array_filter(
-            explode(',', env('APP_PREVIOUS_KEYS', ''))
-        ),
+        ...array_filter(explode(',', env('APP_PREVIOUS_KEYS', ''))),
     ],
+
+    'cipher' => 'AES-256-CBC',
 
     /*
     |--------------------------------------------------------------------------
     | Maintenance Mode Driver
     |--------------------------------------------------------------------------
     |
-    | These configuration options determine the driver used to determine and
-    | manage Laravel's "maintenance mode" status. The "cache" driver will
-    | allow maintenance mode to be controlled across multiple machines.
+    | These options determine the driver used to manage Laravel's maintenance
+    | mode status. The "cache" driver allows maintenance mode to be controlled
+    | across multiple machines using the same cache store.
     |
-    | Supported drivers: "file", "cache"
+    | Supported: "file", "cache"
     |
     */
 
     'maintenance' => [
         'driver' => env('APP_MAINTENANCE_DRIVER', 'file'),
-        'store' => env('APP_MAINTENANCE_STORE', 'database'),
+        'store'  => env('APP_MAINTENANCE_STORE', 'database'),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Autoloaded Service Providers
+    |--------------------------------------------------------------------------
+    |
+    | The service providers listed here will be automatically loaded on the
+    | request to your application. Feel free to add your own services to
+    | this array to grant expanded functionality to your applications.
+    |
+    */
+
+    'providers' => ServiceProvider::defaultProviders()->merge([
+        /*
+         * Package Service Providers
+         */
+        Barryvdh\DomPDF\ServiceProvider::class,
+        Maatwebsite\Excel\ExcelServiceProvider::class,
+
+        /*
+         * Application Service Providers
+         */
+        App\Providers\AppServiceProvider::class,
+        App\Providers\AuthServiceProvider::class,
+        // App\Providers\BroadcastServiceProvider::class,
+        // App\Providers\EventServiceProvider::class,
+        // App\Providers\RouteServiceProvider::class,
+    ])->toArray(),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Class Aliases
+    |--------------------------------------------------------------------------
+    |
+    | This array of class aliases will be registered when this application
+    | is started. Aliases allow you to use a short name for a long class
+    | name, which is convenient to use throughout your application.
+    |
+    */
+
+    'aliases' => Facade::defaultAliases()->merge([
+        /*
+         * Package Facades
+         */
+        'PDF'   => Barryvdh\DomPDF\Facade\Pdf::class,
+        'Excel' => Maatwebsite\Excel\Facades\Excel::class,
+    ])->toArray(),
 
 ];

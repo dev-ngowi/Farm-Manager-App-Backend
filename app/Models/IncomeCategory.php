@@ -14,7 +14,7 @@ class IncomeCategory extends Model
     // =================================================================
 
     protected $table = 'income_categories';
-    protected $primaryKey = 'category_id';
+    protected $primaryKey = 'id';
     public $incrementing = true;
     protected $keyType = 'int';
 
@@ -49,7 +49,7 @@ class IncomeCategory extends Model
 
     public function incomes(): HasMany
     {
-        return $this->hasMany(Income::class, 'category_id', 'category_id');
+        return $this->hasMany(Income::class, 'category_id', 'id');
     }
 
     public function parent(): BelongsTo
@@ -134,7 +134,7 @@ class IncomeCategory extends Model
             ->whereYear('income_date', now()->subMonth()->year)
             ->sum('amount');
 
-        return $lastMonth > 0 
+        return $lastMonth > 0
             ? round((($this->earned_this_month - $lastMonth) / $lastMonth) * 100, 1)
             : null;
     }
@@ -146,7 +146,7 @@ class IncomeCategory extends Model
 
     public function getProfitMarginAttribute(): ?float
     {
-        $costs = Expense::whereHas('category', fn($q) => 
+        $costs = Expense::whereHas('category', fn($q) =>
             $q->where('category_name', 'like', '%' . $this->category_name . '%')
         )->sum('amount');
         return $costs > 0 ? round((($this->total_earned - $costs) / $this->total_earned) * 100, 1) : null;
@@ -186,7 +186,7 @@ class IncomeCategory extends Model
     public function scopeMainRevenue($query)
     {
         return $query->whereRaw('(
-            SELECT SUM(amount) FROM incomes i 
+            SELECT SUM(amount) FROM incomes i
             WHERE i.category_id = income_categories.category_id
         ) >= 0.6 * (SELECT SUM(amount) FROM incomes)');
     }
@@ -194,13 +194,13 @@ class IncomeCategory extends Model
     public function scopeHighGrowth($query)
     {
         return $query->whereRaw('
-            (SELECT SUM(amount) FROM incomes i 
-             WHERE i.category_id = income_categories.category_id 
+            (SELECT SUM(amount) FROM incomes i
+             WHERE i.category_id = income_categories.id
                AND MONTH(i.income_date) = MONTH(CURDATE())
                AND YEAR(i.income_date) = YEAR(CURDATE())
             ) > 1.1 * (
-                SELECT SUM(amount) FROM incomes i2 
-                WHERE i2.category_id = income_categories.category_id 
+                SELECT SUM(amount) FROM incomes i2
+                WHERE i2.category_id = income_categories.id
                   AND MONTH(i2.income_date) = MONTH(CURDATE() - INTERVAL 1 MONTH)
             )
         ');

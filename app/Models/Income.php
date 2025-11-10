@@ -65,7 +65,7 @@ class Income extends Model
 
     public function category(): BelongsTo
     {
-        return $this->belongsTo(IncomeCategory::class, 'category_id', 'category_id');
+        return $this->belongsTo(IncomeCategory::class, 'category_id', 'id');
     }
 
     public function animal(): BelongsTo
@@ -127,7 +127,7 @@ class Income extends Model
 
     public function getIsMilkIncomeAttribute(): bool
     {
-        return $this->category?->category_name === 'Milk Sale' || 
+        return $this->category?->category_name === 'Milk Sale' ||
                str($this->category?->category_name)->contains('Milk');
     }
 
@@ -197,14 +197,14 @@ class Income extends Model
 
     public function scopeMilkSales($query)
     {
-        return $query->whereHas('category', fn($q) => 
+        return $query->whereHas('category', fn($q) =>
             $q->where('category_name', 'like', '%Milk%')
         );
     }
 
     public function scopeAnimalSales($query)
     {
-        return $query->whereHas('category', fn($q) => 
+        return $query->whereHas('category', fn($q) =>
             $q->where('category_name', 'like', '%Animal%')
               ->orWhere('category_name', 'like', '%Sale%')
         );

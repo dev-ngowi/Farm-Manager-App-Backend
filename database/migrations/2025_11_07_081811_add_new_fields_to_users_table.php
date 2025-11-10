@@ -13,7 +13,7 @@ return new class extends Migration
     {
         Schema::table('users', function (Blueprint $table) {
             // Add new columns (only if they don't exist already)
-            $table->string('firstname', 100)->after('name')->nullable(false);
+            $table->string('firstname', 100)->after('username')->nullable(false);
             $table->string('lastname', 100)->after('firstname')->nullable(false);
 
             // Change name → keep for backward compatibility or drop later

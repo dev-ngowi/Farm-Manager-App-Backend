@@ -8,8 +8,8 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('income', function (Blueprint $table) {
-            $table->id(); 
+        Schema::create('incomes', function (Blueprint $table) {
+            $table->id();
 
             $table->foreignId('farmer_id')
                   ->constrained('farmers')
@@ -58,6 +58,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::dropIfExists('income');
+        Schema::dropIfExists('incomes');
     }
 };

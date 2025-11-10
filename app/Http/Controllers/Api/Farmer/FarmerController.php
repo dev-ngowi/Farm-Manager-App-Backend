@@ -139,7 +139,7 @@ class FarmerController extends Controller
 
             $validated = $request->validate([
                 'farm_name'         => 'sometimes|required|string|max:100',
-                'farm_purpose'      => 'sometimes|required|string|in:Dairy,Beef,Mixed,Poultry,Piggery,Crop-Livestock,Other',
+                'farm_purpose'      => 'sometimes|required|string|in:Dairy,Meat,Dual Purpose,Other',
                 'total_land_acres'  => 'sometimes|required|numeric|min:0.1|max:10000',
                 'years_experience'  => 'sometimes|required|integer|min:0|max:70',
                 'location_id'       => 'sometimes|required|exists:locations,id',
@@ -188,44 +188,44 @@ class FarmerController extends Controller
      * Farmer dashboard summary
      */
     public function dashboard(Request $request)
-    {
-        try {
-            $farmer = $request->user()->farmer()->firstOrFail();
+{
+    try {
+        $farmer = $request->user()->farmer()->firstOrFail();
 
-            return response()->json([
-                'status' => 'success',
-                'data' => [
-                    'profile' => $farmer,
-                    'summary' => [
-                        'total_livestock' => $farmer->total_animals,
-                        'active_milking_cows' => $farmer->milking_cows_count,
-                        'total_expenses_this_month' => round($farmer->expenses()->thisMonth()->sum('amount'), 2),
-                        'total_income_this_month' => round($farmer->income()->thisMonth()->sum('amount'), 2),
-                        'monthly_profit' => round($farmer->monthly_profit, 2),
-                        'today_milk_income' => round($farmer->today_milk_income, 2),
-                        'farm_size_acres' => $farmer->total_land_acres,
-                        'years_farming' => $farmer->years_experience,
-                        'experience_badge' => $farmer->experience_level,
-                    ],
-                    'recent_activity' => [
-                        'latest_livestock' => $farmer->livestock()->latest()->take(3)->get(),
-                        'pending_requests' => $farmer->serviceRequests()->where('status', 'Pending')->count(),
-                        'upcoming_appointments' => $farmer->vetAppointments()->where('appointment_date', '>=', now())->count(),
-                    ]
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'profile' => $farmer,
+                'summary' => [
+                    'total_livestock' => $farmer->total_animals,
+                    'active_milking_cows' => $farmer->milking_cows_count,
+                    'total_expenses_this_month' => round($farmer->expenses()->thisMonth()->sum('amount'), 2),
+                    'total_income_this_month' => round($farmer->income()->thisMonth()->sum('amount'), 2),
+                    'monthly_profit' => $farmer->monthly_profit,
+                    'today_milk_income' => $farmer->today_milk_income,
+                    'farm_size_acres' => $farmer->total_land_acres,
+                    'years_farming' => $farmer->years_experience,
+                    'experience_badge' => $farmer->experience_level,
+                ],
+                'recent_activity' => [
+                    'latest_livestock' => $farmer->livestock()->latest()->take(3)->get(),
+                    'pending_requests' => $farmer->pending_requests_count, // FIXED!
+                    'upcoming_appointments' => $farmer->upcomingVetAppointments()->count(),
                 ]
-            ], 200);
+            ]
+        ], 200);
 
-        } catch (ModelNotFoundException $e) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Complete your profile first.'
-            ], 404);
-        } catch (\Exception $e) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Dashboard error.',
-                'error' => $e->getMessage()
-            ], 500);
-        }
+    } catch (ModelNotFoundException $e) {
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Complete your profile first.'
+        ], 404);
+    } catch (\Exception $e) {
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Dashboard error.',
+            'error' => $e->getMessage()
+        ], 500);
     }
+}
 }

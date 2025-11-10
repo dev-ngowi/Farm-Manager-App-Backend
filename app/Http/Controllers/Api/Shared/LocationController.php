@@ -12,6 +12,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
 
 class LocationController extends Controller
@@ -23,6 +24,8 @@ class LocationController extends Controller
 
     public function indexLocations(Request $request)
     {
+
+
         try {
             $query = Location::withAllRelations()
                 ->when($request->search, function ($q, $search) {
@@ -58,11 +61,12 @@ class LocationController extends Controller
 
     public function storeLocation(Request $request)
     {
+        $userId = Auth::id();
         try {
             $validated = $request->validate([
-                'region_id'       => 'nullable|exists:regions,id',
-                'district_id'     => 'nullable|exists:districts,id',
-                'ward_id'         => 'nullable|exists:wards,id',
+                'region_id'       => 'required|exists:regions,id',
+                'district_id'     => 'required|exists:districts,id',
+                'ward_id'         => 'required|exists:wards,id',
                 'street_id'       => 'nullable|exists:streets,id',
                 'latitude'        => 'required_with:longitude|numeric|between:-90,90',
                 'longitude'       => 'required_with:latitude|numeric|between:-180,180',
@@ -73,10 +77,15 @@ class LocationController extends Controller
                 return Location::create($validated);
             });
 
+            $autoAssignUserLoc = UserLocation::create([
+                'user_id' => $userId,
+                'location_id' => $location->id,
+            ]);
+
             return response()->json([
                 'status' => 'success',
                 'message' => 'Location created successfully.',
-                'data' => $location->load(['region', 'district', 'ward', 'street'])
+                'data' => $location->load(['region', 'district', 'ward', 'street', 'users'])
             ], 201);
 
         } catch (ValidationException $e) {

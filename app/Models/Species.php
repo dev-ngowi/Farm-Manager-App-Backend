@@ -5,7 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
-
+use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Support\Facades\DB;
 class Species extends Model
 {
     // =================================================================
@@ -13,7 +14,7 @@ class Species extends Model
     // =================================================================
 
     protected $table = 'species';
-    protected $primaryKey = 'species_id'; // INT as you specified
+    protected $primaryKey = 'id';
     public $incrementing = true;
     protected $keyType = 'int';
 
@@ -38,7 +39,7 @@ class Species extends Model
      */
     public function breeds(): HasMany
     {
-        return $this->hasMany(Breed::class, 'species_id', 'species_id');
+        return $this->hasMany(Breed::class, 'species_id', 'id');
     }
 
     /**
@@ -46,8 +47,22 @@ class Species extends Model
      */
     public function livestock(): HasMany
     {
-        return $this->hasMany(Livestock::class, 'species_id', 'species_id');
+        return $this->hasMany(Livestock::class, 'species_id', 'id');
     }
+
+    public function topBreed(): HasOne
+{
+    return $this->hasOne(Breed::class, 'species_id', 'id')
+        ->select(
+            'breeds.id',
+            'breeds.breed_name',
+            'breeds.purpose',
+            'breeds.origin',
+            'breeds.species_id',
+            DB::raw('(SELECT COUNT(*) FROM livestock WHERE livestock.breed_id = breeds.id) as livestock_count')
+        )
+        ->orderByDesc('livestock_count');
+}
 
     /**
      * All milk records from animals of this species

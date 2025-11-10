@@ -45,7 +45,7 @@ class Breed extends Model
      */
     public function species(): BelongsTo
     {
-        return $this->belongsTo(Species::class, 'species_id', 'species_id');
+        return $this->belongsTo(Species::class, 'species_id', 'id');
     }
 
     /**
@@ -208,8 +208,8 @@ class Breed extends Model
     public function getAverageAdgAttribute(): ?float
     {
         return $this->weightRecords()
-            ->selectRaw('animal_id, 
-                (MAX(weight_kg) - MIN(weight_kg)) / 
+            ->selectRaw('animal_id,
+                (MAX(weight_kg) - MIN(weight_kg)) /
                 DATEDIFF(MAX(record_date), MIN(record_date)) as adg')
             ->groupBy('animal_id')
             ->avg('adg');
@@ -222,7 +222,7 @@ class Breed extends Model
 
     public function getTotalCostAttribute(): float
     {
-        return $this->expenses()->sum('amount') + 
+        return $this->expenses()->sum('amount') +
                ($this->livestock()->sum('purchase_cost') ?? 0);
     }
 
