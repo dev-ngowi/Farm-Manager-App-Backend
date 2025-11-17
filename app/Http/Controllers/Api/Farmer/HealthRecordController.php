@@ -272,41 +272,48 @@ class HealthRecordController extends Controller
         ]);
     }
     // =================================================================
-// DOWNLOAD PDF: Single report
-// =================================================================
-public function downloadPdf(Request $request, $health_id)
-{
-    $report = HealthReport::where('farmer_id', $request->user()->farmer->id)
-        ->with(['animal', 'diagnoses.vet', 'media'])
-        ->findOrFail($health_id);
+    // DOWNLOAD PDF: Single report
+    // =================================================================
+    public function downloadPdf(Request $request, $health_id)
+    {
+        $report = HealthReport::where('farmer_id', $request->user()->farmer->id)
+            ->with(['animal', 'diagnoses.vet', 'media'])
+            ->findOrFail($health_id);
 
-    $farmer = $request->user()->farmer;
+        $farmer = $request->user()->farmer;
 
-    $pdf = Pdf::loadView('pdf.health-report', compact('report', 'farmer'))
-        ->setPaper('a4', 'portrait')
-        ->setOptions([
-            'defaultFont' => 'DejaVu Sans',
-            'isHtml5ParserEnabled' => true,
-            'isPhpEnabled' => true,
-        ]);
+        // Fix image paths for PDF
+        foreach ($report->media as $media) {
+            $media->path = storage_path('app/public/' . $media->getRawOriginal('path'));
+        }
 
-    $filename = "Ripoti-Afya-{$report->animal->tag_number}-" . now()->format('Y-m-d') . ".pdf";
+        $pdf = Pdf::loadView('pdf.health-report', compact('report', 'farmer'))
+            ->setPaper('a4', 'portrait')
+            ->setOptions([
+                'defaultFont' => 'DejaVu Sans',
+                'isHtml5ParserEnabled' => true,
+                'isPhpEnabled' => true,
+                'isRemoteEnabled' => true,
+                'tempDir' => storage_path('app/pdf-temp'),
+            ]);
 
-    return $pdf->download($filename);
-}
+        $filename = "Ripoti-Afya-{$report->animal->tag_number}-" . now()->format('Y-m-d') . ".pdf";
 
-// =================================================================
-// DOWNLOAD EXCEL: All reports
-// =================================================================
-public function downloadExcel(Request $request)
-{
-    $filename = "Ripoti-Za-Afya-Zote-" . now()->format('Y-m-d') . ".xlsx";
+        return $pdf->download($filename);
+    }
 
-    return Excel::download(
-        new HealthReportExport($request->user()->farmer->id),
-        $filename
-    );
-}
+    // =================================================================
+    // DOWNLOAD EXCEL: All reports
+    // =================================================================
+    public function downloadExcel(Request $request)
+    {
+        $filename = "Ripoti-Za-Afya-Zote-" . now()->format('Y-m-d') . ".xlsx";
+
+        return Excel::download(
+            new HealthReportExport($request->user()->farmer->id),
+            $filename
+        );
+    }
 
 // =================================================================
 // DOWNLOAD PDF ALL: All reports (multi-page)

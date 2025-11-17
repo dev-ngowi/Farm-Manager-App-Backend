@@ -7,6 +7,7 @@ use App\Models\BirthRecord;
 use App\Models\BreedingRecord;
 use App\Models\Livestock;
 use App\Models\OffspringRecord;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\DB;
@@ -321,4 +322,46 @@ class BirthRecordController extends Controller
             ]
         ]);
     }
+
+    public function downloadPdf(Request $request, $birth_id)
+{
+    $birth = BirthRecord::whereHas('breeding.dam.farmer', function ($q) use ($request) {
+        $q->where('farmer_id', $request->user()->farmer->id);
+    })
+    ->with([
+        'breeding.dam' => fn($q) => $q->select('animal_id', 'tag_number', 'name', 'breed_id', 'species_id'),
+        'breeding.dam.breed',
+        'breeding.dam.species',
+        'breeding.sire' => fn($q) => $q->select('animal_id', 'tag_number', 'name'),
+        'vet',
+        'offspringRecords.offspring',
+        'expenses',
+        'incomeFromOffspring'
+    ])
+    ->findOrFail($birth_id);
+
+    $farmer = $request->user()->farmer;
+
+    // Fix media paths if any exist
+    foreach ($birth->offspringRecords as $offspring) {
+        if ($offspring->offspring && $offspring->offspring->photo) {
+            $offspring->offspring->photo_url = public_path('storage/' . $offspring->offspring->photo);
+        }
+    }
+
+    $pdf = Pdf::loadView('pdf.birth-record', compact('birth', 'farmer'))
+        ->setPaper('a4', 'portrait')
+        ->setOptions([
+            'defaultFont' => 'DejaVu Sans',
+            'isHtml5ParserEnabled' => true,
+            'isPhpEnabled' => true,
+            'isRemoteEnabled' => true,
+            'tempDir' => storage_path('app/pdf-temp'),
+        ]);
+
+    $filename = "Ripoti-Kuzaliwa-{$birth->breeding->dam->tag_number}-" .
+                $birth->birth_date->format('Y-m-d') . ".pdf";
+
+    return $pdf->download($filename);
+}
 }

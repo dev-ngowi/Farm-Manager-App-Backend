@@ -215,7 +215,7 @@ class FeedInventory extends Model
 
     public function scopeInStock($query)
     {
-        return $query->whereHas('stockRecords', fn($q) => 
+        return $query->whereHas('stockRecords', fn($q) =>
             $q->havingRaw('SUM(quantity) > 0')
         );
     }
@@ -223,9 +223,9 @@ class FeedInventory extends Model
     public function scopeLowStock($query, $days = 7)
     {
         return $query->whereHas('stockRecords', function ($q) use ($days) {
-            $q->selectRaw('feed_id, 
+            $q->selectRaw('feed_id,
                 SUM(quantity) as stock,
-                AVG(CASE WHEN intake_date >= ? THEN quantity ELSE 0 END) * 7 as daily_use', 
+                AVG(CASE WHEN intake_date >= ? THEN quantity ELSE 0 END) * 7 as daily_use',
                 [now()->subDays(7)]
             )
             ->havingRaw('stock / NULLIF(daily_use, 0) <= ?', [$days]);
@@ -246,15 +246,15 @@ class FeedInventory extends Model
     public function scopeBestValue($query)
     {
         return $query->whereRaw('protein_percentage / cost_per_unit >= (
-            SELECT AVG(protein_percentage / cost_per_unit) * 1.1 
-            FROM feed_inventory 
+            SELECT AVG(protein_percentage / cost_per_unit) * 1.1
+            FROM feed_inventory
             WHERE protein_percentage > 0
         )');
     }
 
     public function scopeUsedThisMonth($query)
     {
-        return $query->whereHas('intakeRecords', fn($q) => 
+        return $query->whereHas('intakeRecords', fn($q) =>
             $q->whereMonth('intake_date', now()->month)
         );
     }
@@ -263,4 +263,17 @@ class FeedInventory extends Model
     {
         return $query->where('supplier', 'like', "%{$supplier}%");
     }
+
+    // In app/Models/FeedInventory.php
+public function stocks(): HasMany
+{
+    return $this->hasMany(FeedStock::class, 'feed_id');
+}
+
+public function getTotalStockAttribute(): float
+{
+    return $this->stocks()->sum('remaining_kg');
+}
+
+
 }
