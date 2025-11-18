@@ -20,12 +20,13 @@ use App\Http\Controllers\Api\Farmer\ProductionFactorController;
 use App\Http\Controllers\Api\Farmer\ProfitLossController;
 use App\Http\Controllers\Api\Farmer\SaleController;
 use App\Http\Controllers\Api\Farmer\VaccinationController;
-use App\Http\Controllers\Api\Farmer\VeterinarianController;
-use App\Http\Controllers\Api\Farmer\VetServiceAreaController;
 use App\Http\Controllers\Api\Farmer\WeightRecordController;
 use App\Http\Controllers\Api\Vet\AppointmentController;
 use App\Http\Controllers\Api\Vet\DiagnosisController;
 use App\Http\Controllers\Api\Vet\VetActionController;
+use App\Http\Controllers\Api\Vet\VeterinarianController;
+use App\Http\Controllers\Api\Vet\VetServiceAreaController;
+
 
 /*
 |--------------------------------------------------------------------------
@@ -42,10 +43,13 @@ Route::prefix('v1')->group(function () {
     Route::post('/password/reset-request', [UserController::class, 'requestPasswordReset']);
     Route::post('/password/reset', [UserController::class, 'resetPassword']);
 
+
     // ========================================
     // PROTECTED ROUTES (Require auth:sanctum)
     // ========================================
     Route::middleware('auth:sanctum')->group(function () {
+
+        Route::post('/assign-role', [UserController::class, 'assignRole']);
 
         // Sanctum: Get authenticated user
         Route::get('/user', fn(Request $request) => response()->json([

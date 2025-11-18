@@ -7,6 +7,7 @@ use App\Models\UserRole;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Auth\Events\Registered;
+use Illuminate\Validation\ValidationException;
 use App\Http\Controllers\Controller;
 use Illuminate\Validation\Rules;
 use Illuminate\Http\JsonResponse;
@@ -16,6 +17,8 @@ use Illuminate\Validation\Rule;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use App\Http\Requests\AssignRoleRequest;
+use Illuminate\Support\Facades\DB;
 
 class UserController extends Controller
 {
@@ -124,10 +127,19 @@ class UserController extends Controller
     // ---
     public function store(Request $request): JsonResponse
     {
+        // --- START DUAL LOGIC: Registration & Initial Role Assignment ---
         try {
+
+            // ... (Log & Validation - Unchanged)
+
+            Log::info('Registration attempt started.', [
+                'request_data' => $request->except(['password', 'password_confirmation']),
+                'ip'           => $request->ip(),
+            ]);
+
             $request->validate($this->getValidationRules($request));
 
-            $role_name = $request->input('role', 'Farmer');
+            $role_name = $request->input('role', 'unassigned');
             $phone_number = $request->phone_number;
 
             $username = $this->generateUsername($request->lastname, $phone_number);
@@ -142,45 +154,76 @@ class UserController extends Controller
                 'last_login'   => now(),
             ];
 
-            // Only add email if provided or if role requires it
-            if ($role_name !== 'Farmer' || $request->filled('email')) {
+            if ($request->filled('email')) {
                 $userData['email'] = $request->email;
             }
 
+            // --- Start Database Operations in a Transaction ---
+            DB::beginTransaction();
+
             $user = User::create($userData);
 
-            $role = Role::where('name', $role_name)->firstOrFail();
-            $user->assignRole($role);
+            $role = Role::where('name', $role_name)->first();
 
-            UserRole::create([
-                'user_id' => $user->id,
-                'role_id' => $role->id
-            ]);
+            if ($role) {
+                $user->assignRole($role);
+
+                // 🔑 CRITICAL FIX: Include the required 'role_id' from the Spatie Role model
+                UserRole::create([
+                    'user_id' => $user->id,
+                    'role' => $role_name, // Keeping the string role for convenience/readability
+                    'role_id' => $role->id, // <--- THIS IS THE FIX
+                ]);
+
+            } else {
+                // Log severe error if the 'unassigned' role is missing from the Spatie roles table
+                Log::error("Spatie Role '$role_name' not found during registration. User created without a role.", [
+                    'user_id' => $user->id,
+                    'role_name' => $role_name,
+                ]);
+            }
+
+            DB::commit(); // Commit transaction if everything succeeded
 
             event(new Registered($user));
             $token = $user->createToken('auth_token')->plainTextToken;
 
+            Log::info('Registration and role assignment complete.', [
+                'user_id' => $user->id,
+                'role' => $role_name,
+            ]);
+
             return response()->json([
                 'status'  => 'success',
                 'code'    => Response::HTTP_CREATED,
-                'message' => 'User registered successfully.',
+                'message' => 'User registered successfully. Proceed to login.',
                 'data'    => [
-                    'user'         => $this->formatUserData($user),
+                    'user'         => $this->formatUserData($user->fresh()),
                     'access_token' => $token,
                     'token_type'   => 'Bearer',
                 ],
             ], Response::HTTP_CREATED);
 
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
+            // ... (Validation error handling - Unchanged)
+            DB::rollBack();
+            Log::warning('Registration validation failed.', [
+                'errors'  => $e->errors(),
+                'request' => $request->except(['password', 'password_confirmation'])
+            ]);
+
             return response()->json([
                 'status'  => 'error',
                 'code'    => Response::HTTP_UNPROCESSABLE_ENTITY,
-                'message' => 'Validation failed.',
+                'message' => 'Validation failed. Please check the fields.',
                 'errors'  => $e->errors(),
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
 
         } catch (Exception $e) {
-            Log::error('Registration error: ' . $e->getMessage(), [
+            // ... (Critical error handling - Unchanged)
+            DB::rollBack();
+
+            Log::error('Registration failed with critical server error: ' . $e->getMessage(), [
                 'trace'   => $e->getTraceAsString(),
                 'request' => $request->except(['password', 'password_confirmation'])
             ]);
@@ -188,9 +231,92 @@ class UserController extends Controller
             return response()->json([
                 'status'  => 'error',
                 'code'    => Response::HTTP_INTERNAL_SERVER_ERROR,
-                'message' => 'Registration failed. Please try again.',
+                'message' => 'Registration failed due to a server error. Please try again.',
                 'debug'   => config('app.debug') ? $e->getMessage() : null,
             ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+    }
+    // Assuming this is within an AuthController or similar
+    public function assignRole(AssignRoleRequest $request)
+    {
+        $user = $request->user();
+        $newRole = $request->validated('role');
+
+        Log::info('Role Assignment Started', [
+            'user_id'       => $user->id,
+            'name'           => $user->full_name,
+            'phone'          => $user->phone_number,
+            'requested_role' => $newRole,
+            'current_roles'  => $user->getRoleNames()->toArray()
+        ]);
+
+        // Check 1: Already has the role
+        if ($user->hasRole($newRole)) {
+            return response()->json([
+                'status'  => 'success',
+                'message' => 'Tayari wewe ni ' . ucfirst($newRole) . '!',
+                'data'    => $this->formatUserData($user)
+            ], 200);
+        }
+
+        // --- Start Transaction for Data Consistency ---
+        // This ensures both Spatie and the custom model are updated, or neither is.
+        DB::beginTransaction();
+
+        try {
+            // Check 2: Assign and sync the new role in Spatie
+            // This removes 'unassigned' and assigns the new role in one go.
+            $user->syncRoles($newRole);
+
+            // Extra safety check for 'unassigned' (mostly redundant)
+            if ($user->hasRole('unassigned')) {
+                $user->removeRole('unassigned');
+            }
+
+            // --- 🔑 CRUCIAL NEW LOGIC: Update Custom UserRole Model ---
+
+            // 1. Remove all existing custom roles for this user (to match syncRoles behavior)
+            UserRole::where('user_id', $user->id)->delete();
+
+            // 2. Insert the single new role
+            UserRole::create([
+                'user_id' => $user->id,
+                'role' => $newRole, // Assuming your custom model uses a 'role' string column
+            ]);
+
+            // --- End Custom Logic ---
+
+            DB::commit(); // Commit the transaction if both operations succeeded
+
+            $user = $user->fresh(); // Reload user data after updates
+
+            Log::info('Role Assignment Complete – DUAL UPDATE SUCCESS', [
+                'user_id'     => $user->id,
+                'final_role'  => $newRole,
+                'all_roles'   => $user->getRoleNames()->toArray(),
+                'custom_role' => UserRole::where('user_id', $user->id)->value('role') // Verify custom role
+            ]);
+
+            return response()->json([
+                'status'  => 'success',
+                'message' => 'Karibu ' . $newRole . '! Jukumu lako limebadilishwa kikamilifu.',
+                'data'    => $this->formatUserData($user, true)
+            ], 201);
+
+        } catch (\Exception $e) {
+            DB::rollBack(); // Roll back if any part (Spatie or custom model) failed
+
+            Log::error('❌ Role Assignment Failed – DUAL UPDATE ERROR', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            // Re-throw a generic response exception
+            return response()->json([
+                'status' => 'error',
+                'message' => 'A critical error occurred during role assignment. Please try again.',
+            ], 500);
         }
     }
 
@@ -215,7 +341,6 @@ class UserController extends Controller
                     'access_token' => $token,
                 ],
             ], Response::HTTP_OK);
-
         } catch (Exception $e) {
             Log::error('Failed to retrieve users: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString()
@@ -244,7 +369,6 @@ class UserController extends Controller
                 'message' => 'User retrieved successfully.',
                 'data' => $this->formatUserData($user, true),
             ], Response::HTTP_OK);
-
         } catch (Exception $e) {
             Log::error('Failed to retrieve user: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString(),
@@ -301,7 +425,6 @@ class UserController extends Controller
                 'message' => 'User updated successfully.',
                 'data' => $this->formatUserData($user),
             ], Response::HTTP_OK);
-
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'status' => 'error',
@@ -340,7 +463,6 @@ class UserController extends Controller
                 'message' => 'User deleted successfully.',
                 'data' => null,
             ], Response::HTTP_OK);
-
         } catch (Exception $e) {
             Log::error('Failed to delete user: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString(),
@@ -358,98 +480,96 @@ class UserController extends Controller
 
 
     public function login(Request $request): JsonResponse
-{
-    try {
-        $request->validate([
-            'login'    => 'required|string',
-            'password' => 'required|string',
-        ]);
+    {
+        try {
+            $request->validate([
+                'login'    => 'required|string',
+                'password' => 'required|string',
+            ]);
 
-        $loginInput = $request->login;
-        $user = null;
+            $loginInput = $request->login;
+            $user = null;
 
-        // Search by phone, email, or username to find the user
-        $user = User::with('roles')->where(function ($query) use ($loginInput) {
-            $query->where('phone_number', $loginInput)
-                  ->orWhere('email', $loginInput)
-                  ->orWhere('username', $loginInput);
-        })->first();
+            // Search by phone, email, or username to find the user
+            $user = User::with('roles')->where(function ($query) use ($loginInput) {
+                $query->where('phone_number', $loginInput)
+                    ->orWhere('email', $loginInput)
+                    ->orWhere('username', $loginInput);
+            })->first();
 
-        // Authentication Failure (Credentials or User Not Found)
-        if (!$user || !Hash::check($request->password, $user->password)) {
-            return response()->json([
-                'status'  => 'error',
-                'code'    => Response::HTTP_UNAUTHORIZED,
-                'message' => 'Invalid credentials.',
-            ], Response::HTTP_UNAUTHORIZED);
-        }
-
-        // Account Status Check
-        if (!$user->is_active) {
-            return response()->json([
-                'status'  => 'error',
-                'code'    => Response::HTTP_FORBIDDEN,
-                'message' => 'Account deactivated. Contact admin.',
-            ], Response::HTTP_FORBIDDEN);
-        }
-
-        $userRole = $user->getRoleNames()->first();
-
-        // === ROLE-BASED LOGIN ENFORCEMENT ===
-
-        // Check if the user has a strict role (Admin, Vet, Researcher)
-        if (in_array($userRole, $this->strict_roles)) {
-            // Strict roles MUST login using email only
-            $isLoginInputEmail = ($loginInput === $user->email && !is_null($user->email));
-
-            if (!$isLoginInputEmail) {
+            // Authentication Failure (Credentials or User Not Found)
+            if (!$user || !Hash::check($request->password, $user->password)) {
                 return response()->json([
                     'status'  => 'error',
                     'code'    => Response::HTTP_UNAUTHORIZED,
-                    'message' => 'Please log in using your email address.',
+                    'message' => 'Invalid credentials.',
                 ], Response::HTTP_UNAUTHORIZED);
             }
+
+            // Account Status Check
+            if (!$user->is_active) {
+                return response()->json([
+                    'status'  => 'error',
+                    'code'    => Response::HTTP_FORBIDDEN,
+                    'message' => 'Account deactivated. Contact admin.',
+                ], Response::HTTP_FORBIDDEN);
+            }
+
+            $userRole = $user->getRoleNames()->first();
+
+            // === ROLE-BASED LOGIN ENFORCEMENT ===
+
+            // Check if the user has a strict role (Admin, Vet, Researcher)
+            if (in_array($userRole, $this->strict_roles)) {
+                // Strict roles MUST login using email only
+                $isLoginInputEmail = ($loginInput === $user->email && !is_null($user->email));
+
+                if (!$isLoginInputEmail) {
+                    return response()->json([
+                        'status'  => 'error',
+                        'code'    => Response::HTTP_UNAUTHORIZED,
+                        'message' => 'Please log in using your email address.',
+                    ], Response::HTTP_UNAUTHORIZED);
+                }
+            }
+
+            // FARMER ROLE: Can login with phone, email, or username
+            // No additional restrictions - they've already been authenticated above
+
+            // === END ENFORCEMENT ===
+
+            // Update last login time
+            $user->update(['last_login' => now()]);
+
+            // Generate access token
+            $token = $user->createToken('auth_token')->plainTextToken;
+
+            return response()->json([
+                'status'  => 'success',
+                'code'    => Response::HTTP_OK,
+                'message' => 'Login successful.',
+                'data'    => [
+                    'user'         => $this->formatUserData($user),
+                    'access_token' => $token,
+                    'token_type'   => 'Bearer',
+                ],
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json([
+                'status'  => 'error',
+                'code'    => Response::HTTP_UNPROCESSABLE_ENTITY,
+                'message' => 'Please enter your phone number or email.',
+                'errors'  => $e->errors(),
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        } catch (Exception $e) {
+            Log::error('Login error: ' . $e->getMessage());
+            return response()->json([
+                'status'  => 'error',
+                'code'    => Response::HTTP_INTERNAL_SERVER_ERROR,
+                'message' => 'Login failed. Try again.',
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
-
-        // FARMER ROLE: Can login with phone, email, or username
-        // No additional restrictions - they've already been authenticated above
-
-        // === END ENFORCEMENT ===
-
-        // Update last login time
-        $user->update(['last_login' => now()]);
-
-        // Generate access token
-        $token = $user->createToken('auth_token')->plainTextToken;
-
-        return response()->json([
-            'status'  => 'success',
-            'code'    => Response::HTTP_OK,
-            'message' => 'Login successful.',
-            'data'    => [
-                'user'         => $this->formatUserData($user),
-                'access_token' => $token,
-                'token_type'   => 'Bearer',
-            ],
-        ]);
-
-    } catch (\Illuminate\Validation\ValidationException $e) {
-        return response()->json([
-            'status'  => 'error',
-            'code'    => Response::HTTP_UNPROCESSABLE_ENTITY,
-            'message' => 'Please enter your phone number or email.',
-            'errors'  => $e->errors(),
-        ], Response::HTTP_UNPROCESSABLE_ENTITY);
-
-    } catch (Exception $e) {
-        Log::error('Login error: ' . $e->getMessage());
-        return response()->json([
-            'status'  => 'error',
-            'code'    => Response::HTTP_INTERNAL_SERVER_ERROR,
-            'message' => 'Login failed. Try again.',
-        ], Response::HTTP_INTERNAL_SERVER_ERROR);
     }
-}
     // ---
     // LOGOUT
     // ---
@@ -463,7 +583,6 @@ class UserController extends Controller
                 'code' => Response::HTTP_OK,
                 'message' => 'Logged out successfully.',
             ], Response::HTTP_OK);
-
         } catch (Exception $e) {
             Log::error('Logout error: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString(),
@@ -501,7 +620,6 @@ class UserController extends Controller
                 'message' => 'OTP sent successfully.',
                 'data' => ['otp_sent_to' => $user->email],
             ], Response::HTTP_OK);
-
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'status' => 'error',
@@ -557,7 +675,6 @@ class UserController extends Controller
                 'code' => Response::HTTP_OK,
                 'message' => 'Password reset successfully.',
             ], Response::HTTP_OK);
-
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'status' => 'error',

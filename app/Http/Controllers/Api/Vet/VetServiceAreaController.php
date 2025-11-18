@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\Api\Farmer;
+namespace App\Http\Controllers\Api\Vet;
 
 use App\Http\Controllers\Controller;
 use App\Models\VetServiceArea;

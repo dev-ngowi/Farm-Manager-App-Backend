@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class VetChatConversation extends Model
 {
@@ -26,6 +27,7 @@ class VetChatConversation extends Model
     // ========================================
     // RELATIONSHIPS
     // ========================================
+
     public function farmer(): BelongsTo
     {
         return $this->belongsTo(Farmer::class);
@@ -43,48 +45,42 @@ class VetChatConversation extends Model
 
     public function messages(): HasMany
     {
-        return $this->hasMany(VetChatMessage::class, 'conversation_id');
+        return $this->hasMany(VetChatMessage::class, 'conversation_id')
+                    ->orderBy('created_at');
     }
 
-    public function latestMessage()
+    public function latestMessage(): HasOne
     {
         return $this->hasOne(VetChatMessage::class, 'conversation_id')->latestOfMany();
     }
-// In app/Models/VetChatConversation.php
 
-public function messages(): HasMany
-{
-    return $this->hasMany(VetChatMessage::class, 'conversation_id')
-                ->orderBy('created_at');
-}
+    // ========================================
+    // CUSTOM METHODS
+    // ========================================
 
-public function latestMessage()
-{
-    return $this->hasOne(VetChatMessage::class, 'conversation_id')
-                ->latestOfMany();
-}
+    public function unreadCountFor($userId): int
+    {
+        return $this->messages()
+            ->where('sender_user_id', '!=', $userId)
+            ->where('is_read', false)
+            ->count();
+    }
 
-public function unreadCountFor($userId): int
-{
-    return $this->messages()
-        ->where('sender_user_id', '!=', $userId)
-        ->where('is_read', false)
-        ->count();
-}
+    public function markAllAsReadFor($userId): void
+    {
+        $this->messages()
+            ->where('sender_user_id', '!=', $userId)
+            ->where('is_read', false)
+            ->update([
+                'is_read' => true,
+                'read_at' => now(),
+            ]);
+    }
 
-public function markAllAsReadFor($userId): void
-{
-    $this->messages()
-        ->where('sender_user_id', '!=', $userId)
-        ->where('is_read', false)
-        ->update([
-            'is_read' => true,
-            'read_at' => now()
-        ]);
-}
     // ========================================
     // SCOPES
     // ========================================
+
     public function scopeActive($query)
     {
         return $query->where('status', 'Active');
@@ -108,20 +104,26 @@ public function markAllAsReadFor($userId): void
     public function scopeUnreadForUser($query, $userId, $userType = 'farmer')
     {
         return $query->whereHas('messages', function ($q) use ($userId, $userType) {
-            $q->where('sender_type', $userType === 'farmer' ? 'vet' : 'farmer')
+            $senderType = $userType === 'farmer' ? 'vet' : 'farmer';
+            $q->where('sender_type', $senderType)
               ->where('is_read', false);
         });
     }
 
     // ========================================
-    // ACCESSORS — SWAHILI + UI READY
+    // ACCESSORS (Swahili + UI ready)
     // ========================================
+
     public function getSubjectDisplayAttribute(): string
     {
-        if ($this->subject) return $this->subject;
-        if ($this->healthReport) {
-            return "Ripoti ya Afya: " . ($this->healthReport->animal?->tag ?? 'Ng’ombe');
+        if ($this->subject) {
+            return $this->subject;
         }
+
+        if ($this->healthReport?->animal?->tag) {
+            return "Ripoti ya Afya: " . $this->healthReport->animal->tag;
+        }
+
         return "Mazungumzo na " . ($this->veterinarian?->user->fullname ?? 'Daktari');
     }
 
@@ -132,18 +134,18 @@ public function markAllAsReadFor($userId): void
             'Medium'  => 'Kawaida',
             'High'    => 'Haraka',
             'Urgent'  => 'Dharura',
-            default   => $this->priority
+            default   => $this->priority,
         };
     }
 
     public function getPriorityBadgeAttribute(): string
     {
         return match ($this->priority) {
-            'Urgent' => 'bg-red-600 text-white',
-            'High'   => 'bg-orange-500 text-white',
-            'Medium' => 'bg-yellow-500 text-black',
-            'Low'    => 'bg-gray-400 text-white',
-            default  => 'bg-gray-300'
+            'Urgent'  => 'bg-red-600 text-white',
+            'High'    => 'bg-orange-500 text-white',
+            'Medium'  => 'bg-yellow-500 text-black',
+            'Low'     => 'bg-gray-400 text-white',
+            default   => 'bg-gray-300',
         };
     }
 
@@ -153,7 +155,7 @@ public function markAllAsReadFor($userId): void
             'Active'   => 'Inaendelea',
             'Resolved' => 'Imesuluhishwa',
             'Closed'   => 'Imefungwa',
-            default    => $this->status
+            default    => $this->status,
         };
     }
 
@@ -164,27 +166,27 @@ public function markAllAsReadFor($userId): void
 
     public function getUnreadCountAttribute(): int
     {
-        $user = auth()->user();
+        $user = auth()->Auth::user();
         $type = $user->farmer ? 'farmer' : 'vet';
-        $id = $user->farmer?->id ?? $user->veterinarian?->id;
+        $senderType = $type === 'farmer' ? 'vet' : 'farmer';
 
         return $this->messages()
-            ->where('sender_type', $type === 'farmer' ? 'vet' : 'farmer')
+            ->where('sender_type', $senderType)
             ->where('is_read', false)
             ->count();
     }
 
     public function getOtherParticipantAttribute()
     {
-        $user = auth()->user();
-        if ($user->farmer) {
-            return $this->veterinarian?->user;
-        }
-        return $this->farmer?->user;
+        $user = auth()->Auth::user();
+
+        return $user->farmer
+            ? $this->veterinarian?->user
+            : $this->farmer?->user;
     }
 
     public function getAvatarUrlAttribute(): string
     {
-        return $this->getOtherParticipantAttribute()?->profile_photo_url ?? asset('images/avatar.png');
+        return $this->other_participant?->profile_photo_url ?? asset('images/avatar.png');
     }
 }
