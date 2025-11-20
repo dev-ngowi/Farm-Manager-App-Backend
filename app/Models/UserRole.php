@@ -6,28 +6,21 @@ use Illuminate\Database\Eloquent\Model;
 
 class UserRole extends Model
 {
-    // Specify the table name (optional if follows convention)
     protected $table = 'user_roles';
 
-    // Allow mass assignment for these fields
+    // MUST BE role_id (integer), NOT 'role' string!
     protected $fillable = [
         'user_id',
-        'role_id',
+        'role_id',   // ← THIS IS CORRECT
     ];
 
-    /**
-     * Relationship: a user role belongs to a user
-     */
     public function user()
     {
         return $this->belongsTo(User::class);
     }
 
-    /**
-     * Relationship: a user role belongs to a role
-     */
     public function role()
     {
-        return $this->belongsTo(Role::class);
+        return $this->belongsTo(\Spatie\Permission\Models\Role::class, 'role_id');
     }
 }

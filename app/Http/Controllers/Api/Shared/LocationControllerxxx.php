@@ -101,18 +101,31 @@ class LocationController extends Controller
             ]);
             // --- END LOGGING ---
 
-            // ⭐ FIX: Removed automatic UserLocation creation here.
-            // The client will now make a separate call to assignUserLocation
-            // which will handle the user-location association.
+            // ⭐ FIX: REMOVE AUTOMATIC USER LOCATION ASSIGNMENT
+            // The client will handle this explicitly with the assignUserLocation endpoint.
+            /*
+            $autoAssignUserLoc = UserLocation::create([
+                'user_id' => $userId,
+                'location_id' => $location->id,
+            ]);
+
+            // --- LOG USER LOCATION ASSIGNMENT ---
+            Log::info('User assigned to location.', [
+                'user_location_id' => $autoAssignUserLoc->id,
+            ]);
+            // --- END LOGGING ---
+            */
 
             return response()->json([
                 'status' => 'success',
                 'message' => 'Location created successfully.',
+                // Ensure to still return the location data, now without the 'users' relation
+                // if it's unnecessary at this step, but loading the location itself is fine.
                 'data' => $location->load(['region', 'district', 'ward', 'street'])
             ], 201);
 
         } catch (ValidationException $e) {
-            // --- LOG VALIDATION ERRORS ---
+            // ... (Error handling remains the same)
             Log::warning('Location creation validation failed.', [
                 'user_id' => $userId,
                 'errors' => $e->errors(),
@@ -127,7 +140,7 @@ class LocationController extends Controller
             ], 422);
 
         } catch (\Exception $e) {
-            // --- LOG GENERAL EXCEPTION ---
+            // ... (Error handling remains the same)
             Log::error('Failed to create location due to a server error.', [
                 'user_id' => $userId,
                 'error' => $e->getMessage(),
@@ -177,30 +190,11 @@ class LocationController extends Controller
         try {
             $userId = $request->user_id ?? $request->user()->id;
 
-            // --- ADD LOGGING ---
-            Log::info('Fetching user locations', [
-                'user_id' => $userId,
-                'authenticated_user' => $request->user()->id ?? 'none',
-                'request_user_id' => $request->user_id ?? 'none'
-            ]);
-            // --- END LOGGING ---
-
-            // Check if any records exist for this user
-            $count = UserLocation::where('user_id', $userId)->count();
-            Log::info('UserLocation count', ['count' => $count, 'user_id' => $userId]);
-
             $locations = UserLocation::with(['location.region', 'location.district', 'location.ward', 'location.street'])
-                    ->where('user_id', $userId)
-                    ->orderByDesc('is_primary')
-                    ->orderByDesc('created_at')
-                    ->paginate($request->per_page ?? 10);
-
-            // --- ADD MORE LOGGING ---
-            Log::info('Query result', [
-                'total_found' => $locations->total(),
-                'items_count' => count($locations->items())
-            ]);
-            // --- END LOGGING ---
+                ->where('user_id', $userId)
+                ->orderByDesc('is_primary')
+                ->orderByDesc('created_at')
+                ->paginate($request->per_page ?? 10);
 
             return response()->json([
                 'status' => 'success',
@@ -213,11 +207,6 @@ class LocationController extends Controller
             ], 200);
 
         } catch (\Exception $e) {
-            Log::error('Failed to fetch user locations', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-
             return response()->json([
                 'status' => 'error',
                 'message' => 'Failed to fetch user locations.',
@@ -367,7 +356,7 @@ class LocationController extends Controller
                 'status' => 'error',
                 'message' => 'Failed to remove location.',
                 'error' => $e->getMessage()
-            ], 400);
+            ], 500);
         }
     }
     // =================================================================

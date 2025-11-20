@@ -33,6 +33,7 @@ use App\Http\Controllers\Api\Vet\VetServiceAreaController;
 | API Routes - Version 1
 |--------------------------------------------------------------------------
 */
+
 Route::prefix('v1')->group(function () {
 
     // ========================================
@@ -118,17 +119,17 @@ Route::prefix('v1')->group(function () {
         //   HEALTHY RECORDS
         //=========================================
         Route::prefix('health')->group(function () {
-                Route::get('/', [HealthRecordController::class, 'index']);
-                Route::post('/', [HealthRecordController::class, 'store']);
-                Route::get('/summary', [HealthRecordController::class, 'summary']);
-                Route::get('/alerts', [HealthRecordController::class, 'alerts']);
-                Route::get('/dropdowns', [HealthRecordController::class, 'dropdowns']);
-                Route::get('/{health_id}', [HealthRecordController::class, 'show']);
-                Route::put('/{health_id}', [HealthRecordController::class, 'update']);
-                Route::delete('/{health_id}', [HealthRecordController::class, 'destroy']);
-                Route::get('/{health_id}/pdf', [HealthRecordController::class, 'downloadPdf']);
-                Route::get('/export/excel', [HealthRecordController::class, 'downloadExcel']);
-                Route::get('/export/all-pdf', [HealthRecordController::class, 'downloadAllPdf']);
+            Route::get('/', [HealthRecordController::class, 'index']);
+            Route::post('/', [HealthRecordController::class, 'store']);
+            Route::get('/summary', [HealthRecordController::class, 'summary']);
+            Route::get('/alerts', [HealthRecordController::class, 'alerts']);
+            Route::get('/dropdowns', [HealthRecordController::class, 'dropdowns']);
+            Route::get('/{health_id}', [HealthRecordController::class, 'show']);
+            Route::put('/{health_id}', [HealthRecordController::class, 'update']);
+            Route::delete('/{health_id}', [HealthRecordController::class, 'destroy']);
+            Route::get('/{health_id}/pdf', [HealthRecordController::class, 'downloadPdf']);
+            Route::get('/export/excel', [HealthRecordController::class, 'downloadExcel']);
+            Route::get('/export/all-pdf', [HealthRecordController::class, 'downloadAllPdf']);
         });
 
         //===================================
@@ -301,31 +302,31 @@ Route::prefix('v1')->group(function () {
         });
 
         Route::post('/appointments', [AppointmentController::class, 'store']);
-    Route::get('/my-appointments', [AppointmentController::class, 'farmerAppointments']);
+        Route::get('/my-appointments', [AppointmentController::class, 'farmerAppointments']);
 
-    // VET: Calendar & manage
-    Route::prefix('vet')->group(function () {
-        Route::get('/calendar', [AppointmentController::class, 'vetCalendar']);
-        Route::post('/appointments/{appointment_id}', [AppointmentController::class, 'vetRespond']);
-        Route::post('/appointments/{appointment_id}/checkin', fn($req, $id) => app(AppointmentController::class)->vetCheckInOut($req->merge(['action' => 'start']), $id));
-        Route::post('/appointments/{appointment_id}/checkout', fn($req, $id) => app(AppointmentController::class)->vetCheckInOut($req->merge(['action' => 'end']), $id));
-    });
+        // VET: Calendar & manage
+        Route::prefix('vet')->group(function () {
+            Route::get('/calendar', [AppointmentController::class, 'vetCalendar']);
+            Route::post('/appointments/{appointment_id}', [AppointmentController::class, 'vetRespond']);
+            Route::post('/appointments/{appointment_id}/checkin', fn($req, $id) => app(AppointmentController::class)->vetCheckInOut($req->merge(['action' => 'start']), $id));
+            Route::post('/appointments/{appointment_id}/checkout', fn($req, $id) => app(AppointmentController::class)->vetCheckInOut($req->merge(['action' => 'end']), $id));
+        });
 
-    // SHARED
-    Route::get('/appointments/{appointment_id}/pdf', [AppointmentController::class, 'downloadPdf']);
-    Route::get('/vets/{vet_id}/availability', [AppointmentController::class, 'vetAvailability']);
+        // SHARED
+        Route::get('/appointments/{appointment_id}/pdf', [AppointmentController::class, 'downloadPdf']);
+        Route::get('/vets/{vet_id}/availability', [AppointmentController::class, 'vetAvailability']);
         // VET: Manage vaccinations
-    Route::prefix('vet/vaccinations')->group(function () {
-        Route::get('/', [VaccinationController::class, 'index']);
-        Route::post('/', [VaccinationController::class, 'store']);
-        Route::post('/{schedule_id}/complete', [VaccinationController::class, 'complete']);
-        Route::get('/reminders', [VaccinationController::class, 'reminders']);
-        Route::post('/bulk', [VaccinationController::class, 'bulkUpload']);
-        Route::get('/{schedule_id}/certificate', [VaccinationController::class, 'certificate']);
-    });
+        Route::prefix('vet/vaccinations')->group(function () {
+            Route::get('/', [VaccinationController::class, 'index']);
+            Route::post('/', [VaccinationController::class, 'store']);
+            Route::post('/{schedule_id}/complete', [VaccinationController::class, 'complete']);
+            Route::get('/reminders', [VaccinationController::class, 'reminders']);
+            Route::post('/bulk', [VaccinationController::class, 'bulkUpload']);
+            Route::get('/{schedule_id}/certificate', [VaccinationController::class, 'certificate']);
+        });
 
-    // FARMER: View history
-    Route::get('/my-vaccinations', [VaccinationController::class, 'farmerHistory']);
+        // FARMER: View history
+        Route::get('/my-vaccinations', [VaccinationController::class, 'farmerHistory']);
         // ========================================
         // SHARED: SPECIES & BREED
         // ========================================
@@ -353,11 +354,13 @@ Route::prefix('v1')->group(function () {
         // LOCATION MANAGEMENT
         // ========================================
         Route::prefix('locations')->group(function () {
+            // Region & District lookup
             Route::get('/regions', [LocationController::class, 'indexRegions']);
             Route::get('/districts', [LocationController::class, 'indexDistricts']);
             Route::post('/districts', [LocationController::class, 'storeDistrict']);
             Route::get('/regions/{region_id}/districts', [LocationController::class, 'indexDistricts']);
 
+            // Ward CRUD
             Route::prefix('wards')->group(function () {
                 Route::get('/', [LocationController::class, 'indexWards']);
                 Route::post('/', [LocationController::class, 'storeWard']);
@@ -368,16 +371,20 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/districts/{district_id}/wards', [LocationController::class, 'indexWards']);
             Route::get('/regions/{region_id}/wards', [LocationController::class, 'indexWards']);
-            Route::get('/locations', [LocationController::class, 'indexLocations']);
-            Route::post('/locations', [LocationController::class, 'storeLocation']);
-            Route::get('/locations/{id}', [LocationController::class, 'showLocation']);
 
+            // User Location Assignment - MOVE THIS UP BEFORE THE WILDCARD ROUTE
             Route::prefix('user-locations')->group(function () {
                 Route::get('/', [LocationController::class, 'indexUserLocations']);
                 Route::post('/', [LocationController::class, 'assignUserLocation']);
                 Route::patch('/{id}/primary', [LocationController::class, 'setPrimaryLocation']);
                 Route::delete('/{id}', [LocationController::class, 'removeUserLocation']);
             });
+
+            // General Location CRUD (Address + GPS)
+            Route::get('/', [LocationController::class, 'indexLocations']);
+            Route::post('/', [LocationController::class, 'storeLocation']);
+
+            Route::get('/{id}', [LocationController::class, 'showLocation']);
         });
     }); // End auth:sanctum
 }); // End v1 prefix

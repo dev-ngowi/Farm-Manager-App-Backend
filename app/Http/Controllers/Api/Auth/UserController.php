@@ -17,7 +17,6 @@ use Illuminate\Validation\Rule;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
-use App\Http\Requests\AssignRoleRequest;
 use Illuminate\Support\Facades\DB;
 
 class UserController extends Controller
@@ -168,7 +167,7 @@ class UserController extends Controller
             if ($role) {
                 $user->assignRole($role);
 
-                // 🔑 CRITICAL FIX: Include the required 'role_id' from the Spatie Role model
+                // CRITICAL FIX: Include the required 'role_id' from the Spatie Role model
                 UserRole::create([
                     'user_id' => $user->id,
                     'role' => $role_name, // Keeping the string role for convenience/readability
@@ -236,88 +235,97 @@ class UserController extends Controller
             ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
     }
-    // Assuming this is within an AuthController or similar
-    public function assignRole(AssignRoleRequest $request)
+
+    public function assignRole(Request $request)
     {
         $user = $request->user();
-        $newRole = $request->validated('role');
+        $requestedRole = $request->input('role'); // e.g., "Farmer", "Vet", etc.
 
-        Log::info('Role Assignment Started', [
-            'user_id'       => $user->id,
-            'name'           => $user->full_name,
-            'phone'          => $user->phone_number,
-            'requested_role' => $newRole,
-            'current_roles'  => $user->getRoleNames()->toArray()
+        // === VALIDATION ===
+        $request->validate([
+            'role' => ['required', 'string', Rule::in(['Farmer', 'Vet', 'Researcher', 'Admin'])],
         ]);
 
-        // Check 1: Already has the role
-        if ($user->hasRole($newRole)) {
+        Log::info('Role Assignment Started', [
+            'user_id'        => $user->id,
+            'full_name'      => $user->full_name ?? 'N/A',
+            'phone'          => $user->phone_number,
+            'requested_role' => $requestedRole,
+        ]);
+
+        // === CHECK IF USER ALREADY HAS A REAL ROLE ===
+        $existing = UserRole::where('user_id', $user->id)
+            ->whereNotNull('role_id') // real role assigned
+            ->first();
+
+        if ($existing) {
+            $currentRoleName = Role::find($existing->role_id)->name ?? 'Unknown';
+
             return response()->json([
                 'status'  => 'success',
-                'message' => 'Tayari wewe ni ' . ucfirst($newRole) . '!',
-                'data'    => $this->formatUserData($user)
+                'message' => 'Tayari umechagua jukumu la ' . $this->swahiliRole($currentRoleName) . '. Huwezi kubadilisha sasa.',
+                'user'    => $this->formatUserData($user, true),
             ], 200);
         }
 
-        // --- Start Transaction for Data Consistency ---
-        // This ensures both Spatie and the custom model are updated, or neither is.
+        // === ASSIGN THE ROLE ===
         DB::beginTransaction();
 
         try {
-            // Check 2: Assign and sync the new role in Spatie
-            // This removes 'unassigned' and assigns the new role in one go.
-            $user->syncRoles($newRole);
+            $role = Role::where('name', $requestedRole)->firstOrFail();
 
-            // Extra safety check for 'unassigned' (mostly redundant)
-            if ($user->hasRole('unassigned')) {
-                $user->removeRole('unassigned');
-            }
+            // Save only role_id — no more 'role' string column needed
+            UserRole::updateOrCreate(
+                ['user_id' => $user->id],
+                ['role_id' => $role->id]
+            );
 
-            // --- 🔑 CRUCIAL NEW LOGIC: Update Custom UserRole Model ---
+            // Optional: remove any leftover "unassigned" row
+            UserRole::where('user_id', $user->id)
+                ->whereNull('role_id')
+                ->delete();
 
-            // 1. Remove all existing custom roles for this user (to match syncRoles behavior)
-            UserRole::where('user_id', $user->id)->delete();
+            DB::commit();
 
-            // 2. Insert the single new role
-            UserRole::create([
-                'user_id' => $user->id,
-                'role' => $newRole, // Assuming your custom model uses a 'role' string column
-            ]);
+            $user = $user->fresh(); // reload relationships if any
 
-            // --- End Custom Logic ---
-
-            DB::commit(); // Commit the transaction if both operations succeeded
-
-            $user = $user->fresh(); // Reload user data after updates
-
-            Log::info('Role Assignment Complete – DUAL UPDATE SUCCESS', [
-                'user_id'     => $user->id,
-                'final_role'  => $newRole,
-                'all_roles'   => $user->getRoleNames()->toArray(),
-                'custom_role' => UserRole::where('user_id', $user->id)->value('role') // Verify custom role
+            Log::info('Role Assignment SUCCESS', [
+                'user_id'       => $user->id,
+                'assigned_role' => $requestedRole,
             ]);
 
             return response()->json([
                 'status'  => 'success',
-                'message' => 'Karibu ' . $newRole . '! Jukumu lako limebadilishwa kikamilifu.',
-                'data'    => $this->formatUserData($user, true)
+                'message' => 'Hongera! Sasa wewe ni ' . $this->swahiliRole($requestedRole) . ' 🎉',
+                'user'    => $this->formatUserData($user, true),
             ], 201);
 
         } catch (\Exception $e) {
-            DB::rollBack(); // Roll back if any part (Spatie or custom model) failed
+            DB::rollBack();
 
-            Log::error('❌ Role Assignment Failed – DUAL UPDATE ERROR', [
+            Log::error('Role Assignment FAILED', [
                 'user_id' => $user->id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'error'   => $e->getMessage(),
+                'trace'   => $e->getTraceAsString(),
             ]);
 
-            // Re-throw a generic response exception
             return response()->json([
-                'status' => 'error',
-                'message' => 'A critical error occurred during role assignment. Please try again.',
+                'status'  => 'error',
+                'message' => 'Imeshindwa kuweka jukumu. Tafadhali jaribu tena baadaye.',
             ], 500);
         }
+    }
+
+// Beautiful Swahili role names
+    private function swahiliRole($role)
+    {
+        return match ($role) {
+            'Farmer'      => 'Mkulima',
+            'Vet'         => 'Daktari wa Mifugo',
+            'Researcher'  => 'Mtafiti',
+            'Admin'       => 'Msimamizi',
+            default       => $role
+        };
     }
 
     // ---
