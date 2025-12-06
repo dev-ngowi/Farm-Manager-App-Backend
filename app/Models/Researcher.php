@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class Researcher extends Model
 {
@@ -27,13 +28,14 @@ class Researcher extends Model
     ];
 
     protected $casts = [
-        'is_approved' => 'boolean',
-        'approval_date' => 'date',
+        'is_approved'   => 'boolean',
+        'approval_date' => 'datetime',
     ];
 
     // ========================================
-    // RELATIONSHIPS
+    // RELATIONSHIPS – SAFE DELEGATION
     // ========================================
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
@@ -44,9 +46,37 @@ class Researcher extends Model
         return $this->belongsTo(User::class, 'approved_by_admin_id');
     }
 
+    /**
+     * All locations belonging to the researcher (via user)
+     */
+    public function locations(): BelongsToMany
+    {
+        return $this->user()->locations();
+    }
+
+    /**
+     * Primary location of the researcher – SAFE even if user not eager-loaded
+     */
+    public function primaryLocation(): ?Location
+    {
+        return $this->user()
+            ->locations()
+            ->wherePivot('is_primary', true)
+            ->first();
+    }
+
+    /**
+     * Alias for primaryLocation() – many devs use $researcher->location (singular)
+     */
+    public function location(): ?Location
+    {
+        return $this->primaryLocation();
+    }
+
     // ========================================
     // SCOPES
     // ========================================
+
     public function scopeApproved($query)
     {
         return $query->where('is_approved', true);
@@ -63,24 +93,24 @@ class Researcher extends Model
     }
 
     // ========================================
-    // ACCESSORS — SWAHILI + UI READY
+    // ACCESSORS
     // ========================================
+
     public function getFullNameAttribute(): string
     {
-        return $this->academic_title
-            ? "{$this->academic_title} {$this->user->fullname}"
-            : $this->user->fullname;
+        $title = $this->academic_title ? trim($this->academic_title) . ' ' : '';
+        return $title . $this->user->fullname;
     }
 
     public function getPurposeSwahiliAttribute(): string
     {
         return match ($this->research_purpose) {
-            'Academic' => 'Utafiti wa Chuo Kikuu',
+            'Academic'            => 'Utafiti wa Chuo Kikuu',
             'Commercial Research' => 'Utafiti wa Biashara',
-            'Field Research' => 'Utafiti wa Shambani',
-            'Government Policy' => 'Sera za Serikali',
-            'NGO Project' => 'Mradi wa NGO',
-            default => $this->research_purpose
+            'Field Research'      => 'Utafiti wa Shambani',
+            'Government Policy'   => 'Sera za Serikali',
+            'NGO Project'         => 'Mradi wa NGO',
+            default               => $this->research_purpose ?? 'Haijafafanuliwa',
         };
     }
 
@@ -98,39 +128,40 @@ class Researcher extends Model
 
     public function getOrcidUrlAttribute(): ?string
     {
-        if (!$this->orcid_id) return null;
-        return "https://orcid.org/{$this->orcid_id}";
+        return $this->orcid_id ? "https://orcid.org/{$this->orcid_id}" : null;
     }
 
     public function getInstitutionShortAttribute(): string
     {
-        $short = [
-            'Sokoine University of Agriculture' => 'SUA',
-            'University of Dar es Salaam' => 'UDSM',
-            'Muhimbili University' => 'MUHAS',
-            'Nelson Mandela African Institution' => 'NM-AIST',
-            'Tanzania Livestock Research Institute' => 'TALIRI',
+        $map = [
+            'Sokoine University of Agriculture'                                 => 'SUA',
+            'University of Dar es Salaam'                                        => 'UDSM',
+            'Muhimbili University of Health and Allied Sciences'                 => 'MUHAS',
+            'Nelson Mandela African Institution of Science and Technology'      => 'NM-AIST',
+            'Tanzania Livestock Research Institute'                              => 'TALIRI',
         ];
-        return $short[$this->affiliated_institution] ?? $this->affiliated_institution;
+
+        return $map[$this->affiliated_institution] ?? $this->affiliated_institution;
     }
 
     // ========================================
     // METHODS
     // ========================================
+
     public function approve(User $admin): void
     {
         $this->update([
-            'is_approved' => true,
-            'approval_date' => now(),
-            'approved_by_admin_id' => $admin->id
+            'is_approved'          => true,
+            'approval_date'        => now(),
+            'approved_by_admin_id' => $admin->id,
         ]);
 
-        // Send welcome email + SMS
-        // Notification::send($this->user, new ResearcherApproved());
+        // Optional: fire notification
+        // Notification::send($this->user, new ResearcherApprovedNotification($this));
     }
 
     public function isApproved(): bool
     {
-        return $this->is_approved;
+        return $this->is_approved === true;
     }
 }

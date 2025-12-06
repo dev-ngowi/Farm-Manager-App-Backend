@@ -10,15 +10,21 @@ use App\Http\Controllers\Api\Shared\SpeciesBreedController;
 use App\Http\Controllers\Api\Farmer\FarmerController;
 use App\Http\Controllers\Api\Farmer\LivestockController;
 use App\Http\Controllers\Api\Farmer\BreedingController; // ADDED
+use App\Http\Controllers\Api\Farmer\BreedingDashboardController;
+use App\Http\Controllers\Api\Farmer\DeliveryController;
 use App\Http\Controllers\Api\Farmer\ExpenseController;
 use App\Http\Controllers\Api\Farmer\FeedIntakeController;
 use App\Http\Controllers\Api\Farmer\HealthRecordController;
+use App\Http\Controllers\Api\Farmer\HeatCycleController;
+use App\Http\Controllers\Api\Farmer\InseminationController;
+use App\Http\Controllers\Api\Farmer\LactationController;
 use App\Http\Controllers\Api\Farmer\MilkYieldController;
 use App\Http\Controllers\Api\Farmer\OffspringController;
 use App\Http\Controllers\Api\Farmer\PregnancyCheckController;
 use App\Http\Controllers\Api\Farmer\ProductionFactorController;
 use App\Http\Controllers\Api\Farmer\ProfitLossController;
 use App\Http\Controllers\Api\Farmer\SaleController;
+use App\Http\Controllers\Api\Farmer\SemenController;
 use App\Http\Controllers\Api\Farmer\VaccinationController;
 use App\Http\Controllers\Api\Farmer\WeightRecordController;
 use App\Http\Controllers\Api\Vet\AppointmentController;
@@ -26,6 +32,7 @@ use App\Http\Controllers\Api\Vet\DiagnosisController;
 use App\Http\Controllers\Api\Vet\VetActionController;
 use App\Http\Controllers\Api\Vet\VeterinarianController;
 use App\Http\Controllers\Api\Vet\VetServiceAreaController;
+use App\Http\Controllers\Api\Reseacher\ReseacherProfileController; // 💡 ADDED FOR RESEARCHER ROUTES
 
 
 /*
@@ -44,7 +51,10 @@ Route::prefix('v1')->group(function () {
     Route::post('/password/reset-request', [UserController::class, 'requestPasswordReset']);
     Route::post('/password/reset', [UserController::class, 'resetPassword']);
 
-
+    Route::prefix('vets')->group(function () {
+        Route::get('/', [VeterinarianController::class, 'index']); // List all approved vets (for farmers)
+        Route::get('/{vet_id}', [VeterinarianController::class, 'show']); // Single vet profile (public)
+    });
     // ========================================
     // PROTECTED ROUTES (Require auth:sanctum)
     // ========================================
@@ -87,6 +97,18 @@ Route::prefix('v1')->group(function () {
         });
 
         // ========================================
+        // RESEARCHER MODULE (NEWLY ADDED)
+        // ========================================
+        Route::prefix('researcher')->name('researcher.')->group(function () {
+            // Fetch and Update the authenticated researcher's profile details
+            Route::get('profile', [ReseacherProfileController::class, 'show'])->name('profile.show');
+            Route::put('profile', [ReseacherProfileController::class, 'update'])->name('profile.update');
+
+            // Helper endpoint to fetch allowed research purposes
+            Route::get('purposes', [ReseacherProfileController::class, 'getResearchPurposes'])->name('purposes');
+        });
+
+        // ========================================
         // LIVESTOCK MODULE
         // ========================================
         Route::prefix('livestock')->group(function () {
@@ -102,15 +124,81 @@ Route::prefix('v1')->group(function () {
         // ========================================
         // BREEDING MODULE - FIXED & WORKING!
         // ========================================
-        Route::prefix('breedings')->group(function () {
-            Route::get('/', [BreedingController::class, 'index']);
-            Route::post('/', [BreedingController::class, 'store']);
-            Route::get('/summary', [BreedingController::class, 'summary']);
-            Route::get('/alerts', [BreedingController::class, 'alerts']);
-            Route::get('/dropdowns', [BreedingController::class, 'dropdowns']);
-            Route::get('/{breeding_id}', [BreedingController::class, 'show']);
-            Route::put('/{breeding_id}', [BreedingController::class, 'update']);
-            Route::delete('/{breeding_id}', [BreedingController::class, 'destroy']);
+        Route::prefix('breeding')->group(function () {
+
+            // Heat Cycles
+            Route::prefix('heat-cycles')->group(function () {
+                Route::get('/', [HeatCycleController::class, 'index']);           // GET /heat-cycles - List all
+                Route::post('/', [HeatCycleController::class, 'store']);          // POST /heat-cycles - Create new
+                Route::get('/{id}', [HeatCycleController::class, 'show']);        // GET /heat-cycles/{id} - Show single
+                Route::put('/{id}', [HeatCycleController::class, 'update']);      // PUT /heat-cycles/{id} - Update
+                Route::delete('/{id}', [HeatCycleController::class, 'destroy']);  // DELETE /heat-cycles/{id} - Delete
+            });
+
+            // Semen Inventory
+            Route::prefix('semen')->group(function () {
+                Route::get('/', [SemenController::class, 'index']);
+                Route::post('/', [SemenController::class, 'store']);
+                // 🆕 NEW ROUTE for Bulls and Breeds dropdowns
+                Route::get('/dropdowns', [SemenController::class, 'dropdowns']);
+                Route::get('/available', [SemenController::class, 'available']);
+                Route::get('/{id}', [SemenController::class, 'show']);
+                Route::put('/{id}', [SemenController::class, 'update']);
+                Route::delete('/{id}', [SemenController::class, 'destroy']);
+            });
+
+            // Inseminations (Main Breeding Record)
+            Route::prefix('inseminations')->group(function () {
+                Route::get('/', [InseminationController::class, 'index']);
+                Route::post('/', [InseminationController::class, 'store']);
+                Route::get('/{id}', [InseminationController::class, 'show']);
+                Route::put('/{id}', [InseminationController::class, 'update']);
+                Route::delete('/{id}', [InseminationController::class, 'destroy']);
+            });
+
+            // Pregnancy Checks
+            Route::prefix('pregnancy-checks')->group(function () {
+                Route::get('/', [PregnancyCheckController::class, 'index']);
+                Route::post('/', [PregnancyCheckController::class, 'store']);
+                Route::get('/{check}', [PregnancyCheckController::class, 'show']);
+                Route::patch('/{check}', [PregnancyCheckController::class, 'update']);
+                Route::put('/{check}', [PregnancyCheckController::class, 'update']);
+                Route::delete('/{check}', [PregnancyCheckController::class, 'destroy']);
+                Route::get('/{check}/pdf', [PregnancyCheckController::class, 'downloadPdf']);
+            });
+
+            // Deliveries (Calving/Birth Events)
+            Route::prefix('deliveries')->group(function () {
+                Route::get('/', [DeliveryController::class, 'index']);
+                Route::post('/', [DeliveryController::class, 'store']);
+                Route::get('/{delivery}', [DeliveryController::class, 'show']);
+                Route::put('/{delivery}', [DeliveryController::class, 'update']);
+                Route::patch('/{delivery}', [DeliveryController::class, 'update']);
+                Route::delete('/{delivery}', [DeliveryController::class, 'destroy']);
+                Route::get('/{delivery}/pdf', [DeliveryController::class, 'downloadPdf']);
+            });
+
+            // Offspring Management
+            Route::prefix('offspring')->group(function () {
+                Route::get('/', [OffspringController::class, 'index']);
+                Route::post('/', [OffspringController::class, 'store']);
+                Route::get('/{id}', [OffspringController::class, 'show']);
+                Route::match(['put', 'patch'], '/{id}', [OffspringController::class, 'update']);
+                Route::delete('/{id}', [OffspringController::class, 'destroy']);
+                Route::post('/{offspring_id}/register', [OffspringController::class, 'register']);
+                Route::get('/{id}/pdf', [OffspringController::class, 'downloadPdf']);
+            });
+
+            // Lactation Records
+            Route::prefix('lactations')->group(function () {
+                Route::get('/', [LactationController::class, 'index']);
+                Route::put('/{id}', [LactationController::class, 'update']);
+                Route::get('/{id}', [LactationController::class, 'show']);
+            });
+            // Breeding Dashboard
+            Route::get('/dashboard/summary', [BreedingDashboardController::class, 'summary']);
+            Route::get('/dashboard/alerts', [BreedingDashboardController::class, 'alerts']);
+            Route::get('/dashboard/dropdowns', [BreedingDashboardController::class, 'dropdowns']);
         });
 
 
@@ -262,26 +350,29 @@ Route::prefix('v1')->group(function () {
             Route::get('/{sale_id}/pdf', [SaleController::class, 'downloadPdf']);
         });
 
-        Route::prefix('vets')->group(function () {
-            Route::get('/', [VeterinarianController::class, 'index']);
-            Route::get('/{vet_id}', [VeterinarianController::class, 'show']);
-            Route::post('/register', [VeterinarianController::class, 'register']);
+        Route::prefix('vet')->group(function () {
+            // Vet User Actions
+            Route::post('/profile', [VeterinarianController::class, 'store']); // REGISTER/CREATE
+            Route::get('/profile', [VeterinarianController::class, 'myProfile']); // GET OWN PROFILE
+            Route::put('/profile', [VeterinarianController::class, 'update']); // UPDATE OWN PROFILE
+            Route::delete('/profile/photo/{media_id}', [VeterinarianController::class, 'deleteClinicPhoto']); // DELETE PHOTO
+
+            // Admin Actions
+            Route::get('/pending', [VeterinarianController::class, 'pending']);
+            Route::post('/{vet_id}/approve', [VeterinarianController::class, 'approve']);
+            Route::post('/{vet_id}/reject', [VeterinarianController::class, 'reject']);
+
+            // Vet Service Area Routes
+            Route::prefix('service-areas')->group(function () {
+                Route::get('/', [VetServiceAreaController::class, 'index']);
+                Route::post('/', [VetServiceAreaController::class, 'store']);
+                Route::put('/{area_id}', [VetServiceAreaController::class, 'update']);
+                Route::delete('/{area_id}', [VetServiceAreaController::class, 'destroy']);
+            });
+
+            // Vet Finder (Assuming this is a shared/farmer-facing feature)
             Route::post('/find', [VetServiceAreaController::class, 'findByLocation']);
         });
-
-        Route::put('/vet/profile', [VeterinarianController::class, 'updateProfile']);
-
-        Route::prefix('vet/{vet_id}/areas')->group(function () {
-            Route::get('/', [VetServiceAreaController::class, 'index']);
-            Route::post('/', [VetServiceAreaController::class, 'store']);
-            Route::put('/{area_id}', [VetServiceAreaController::class, 'update']);
-            Route::delete('/{area_id}', [VetServiceAreaController::class, 'destroy']);
-        });
-
-        Route::get('/vets/pending', [VeterinarianController::class, 'pending']);
-        Route::post('/vets/{vet_id}/approve', [VeterinarianController::class, 'approve']);
-        Route::post('/vets/{vet_id}/reject', [VeterinarianController::class, 'reject']);
-
         Route::prefix('diagnosis')->middleware('auth:sanctum')->group(function () {
             Route::get('/', [DiagnosisController::class, 'index']);
             Route::post('/{health_id}/respond', [DiagnosisController::class, 'respond']);

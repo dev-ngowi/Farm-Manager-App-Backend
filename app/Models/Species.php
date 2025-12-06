@@ -14,7 +14,7 @@ class Species extends Model
     // =================================================================
 
     protected $table = 'species';
-    protected $primaryKey = 'id';
+    protected $primaryKey = 'species_id';
     public $incrementing = true;
     protected $keyType = 'int';
 

@@ -6,15 +6,29 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    /**
+     * Run the migrations.
+     */
     public function up(): void
     {
         Schema::create('birth_records', function (Blueprint $table) {
-            $table->id('id'); 
+            // 1. Primary Key
+            $table->id(); // Correctly defines the primary key 'id'.
+            // Removed the custom name $table->id('id') as it is redundant.
 
+            // 2. Foreign Keys
             $table->foreignId('breeding_id')
                   ->constrained('breeding_records')
                   ->onDelete('cascade'); // If breeding deleted → birth record gone
 
+            // FIX: Renamed the foreign key column from 'id' to 'veterinarian_id'
+            // to avoid the duplicate column name error (1060).
+            $table->foreignId('veterinarian_id')
+                  ->nullable()
+                  ->constrained('veterinarians')
+                  ->onDelete('set null');
+
+            // 3. Data Fields
             $table->date('birth_date');
             $table->time('birth_time')->nullable();
 
@@ -30,27 +44,24 @@ return new class extends Migration
             $table->enum('dam_condition', ['Good', 'Fair', 'Poor', 'Critical'])
                   ->default('Good');
 
-            $table->foreignId('vet_id')
-                  ->nullable()
-                  ->constrained('veterinarians')
-                  ->onDelete('set null');
-
             $table->text('notes')->nullable();
 
+            // 4. Timestamps
             $table->timestamp('created_at')->useCurrent();
-            // updated_at not needed unless you allow editing birth records
+            $table->timestamp('updated_at')->nullable(); // Added standard updated_at for completeness
 
-            // Indexes
+            // 5. Indexes (Corrected to use 'veterinarian_id' for indexing)
             $table->index('breeding_id');
             $table->index('birth_date');
-            $table->index('vet_id');
+            $table->index('veterinarian_id'); // Updated index name
             $table->index('dam_condition');
             $table->index('birth_type');
-
-            
         });
     }
 
+    /**
+     * Reverse the migrations.
+     */
     public function down(): void
     {
         Schema::dropIfExists('birth_records');

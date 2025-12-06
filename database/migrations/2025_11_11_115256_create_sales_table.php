@@ -6,12 +6,23 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    /**
+     * Run the migrations.
+     */
     public function up(): void
     {
         Schema::create('sales', function (Blueprint $table) {
-            $table->id('sale_id');
+            // FIX 1: Use standard $table->id() for the primary key (creates 'id' column)
+            $table->id();
+
             $table->foreignId('farmer_id')->constrained('farmers')->onDelete('cascade');
-            $table->foreignId('animal_id')->nullable()->constrained('livestock')->onDelete('set null');
+
+            // FIX 2: Explicitly constrain 'animal_id' to the 'animal_id' column in 'livestock'
+            $table->foreignId('animal_id')
+                  ->nullable()
+                  ->constrained('livestock', 'animal_id') // 👈 Corrected reference column
+                  ->onDelete('set null');
+
             $table->string('sale_type', 20); // 'Animal', 'Milk', 'Other'
             $table->string('buyer_name');
             $table->string('buyer_phone')->nullable();
@@ -35,6 +46,9 @@ return new class extends Migration
         });
     }
 
+    /**
+     * Reverse the migrations.
+     */
     public function down(): void
     {
         Schema::dropIfExists('sales');

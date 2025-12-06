@@ -11,7 +11,7 @@ class UserLocation extends Pivot
 
     protected $table = 'user_locations';
 
-    public $incrementing = true; // since you have `id()`
+    public $incrementing = true;
 
     protected $fillable = [
         'user_id',

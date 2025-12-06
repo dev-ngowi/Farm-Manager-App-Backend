@@ -65,20 +65,20 @@ class User extends Authenticatable implements HasMedia
     }
 
 
-public function researcher()
-{
-    return $this->hasOne(Researcher::class);
-}
+    public function researcher()
+    {
+        return $this->hasOne(Researcher::class);
+    }
 
-public function isResearcher(): bool
-{
-    return $this->researcher()->exists();
-}
+    public function isResearcher(): bool
+    {
+        return $this->researcher()->exists();
+    }
 
-public function isApprovedResearcher(): bool
-{
-    return $this->researcher?->is_approved ?? false;
-}
+    public function isApprovedResearcher(): bool
+    {
+        return $this->researcher?->is_approved ?? false;
+    }
 
     public function locations()
     {
@@ -93,11 +93,9 @@ public function isApprovedResearcher(): bool
         return $this->hasMany(UserLocation::class);
     }
 
-    public function primaryLocation()
+    public function primaryLocation(): ?Location
     {
-        return $this->hasOne(UserLocation::class)
-            ->where('is_primary', true)
-            ->with('location');
+        return $this->locations()->wherePivot('is_primary', true)->first();
     }
 
     public function addLocation(Location $location, bool $isPrimary = false)
@@ -119,8 +117,8 @@ public function isApprovedResearcher(): bool
     public function findForPassport($identifier)
     {
         return $this->orWhere('username', $identifier)
-                    ->orWhere('phone_number', $identifier)
-                    ->orWhere('email', $identifier)
-                    ->first();
+            ->orWhere('phone_number', $identifier)
+            ->orWhere('email', $identifier)
+            ->first();
     }
 }

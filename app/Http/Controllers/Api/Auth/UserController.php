@@ -86,7 +86,7 @@ class UserController extends Controller
         $rules = [
             'firstname' => 'required|string|max:100',
             'lastname' => 'required|string|max:100',
-            'role' => $is_update ? 'nullable' : 'required',
+            'role' => $is_update ? 'nullable' : 'nullable',
             'role.*' => 'string|exists:roles,name',
             'email' => $email_rules,
             'phone_number' => $phone_rules,
@@ -105,20 +105,111 @@ class UserController extends Controller
      * Formats the user data for API responses.
      *
      * @param User $user
-     * @param bool $include_timestamps
+     * @param bool $includeToken
      * @return array
      */
-    private function formatUserData(User $user, bool $include_timestamps = false): array
+    private function formatUserData(User $user, bool $includeToken = false): array
     {
-        $data = $user->only(['id', 'firstname', 'lastname', 'email', 'phone_number', 'username', 'is_active']);
-        $data['role'] = $user->getRoleNames()->first();
+        // Ensure roles relationship is loaded
+        if (!$user->relationLoaded('roles')) {
+            $user->load('roles');
+        }
 
-        if ($include_timestamps) {
-            $data['created_at'] = $user->created_at;
-            $data['last_login'] = $user->last_login;
+        // Get the role name reliably, default to 'unassigned'
+        $roleName = $user->getRoleNames()->first() ?? 'unassigned';
+
+        // Get profile status using helper
+        $status = $this->getUserProfileStatus($user);
+
+        Log::info('formatUserData', [
+            'user_id' => $user->id,
+            'role_name' => $roleName,
+            'has_location' => $status['has_location'],
+            'has_completed_details' => $status['has_completed_details'],
+        ]);
+
+        $data = [
+            'id'                    => $user->id,
+            'firstname'             => $user->firstname,
+            'lastname'              => $user->lastname,
+            'full_name'             => $user->full_name,
+            'phone_number'          => $user->phone_number,
+            'email'                 => $user->email,
+            'role'                  => $roleName,
+            'has_completed_details' => $status['has_completed_details'],
+            'has_location'          => $status['has_location'],
+            'primary_location_id'   => $status['primary_location_id'],
+            'created_at'            => $user->created_at?->toDateTimeString(),
+            'updated_at'            => $user->updated_at?->toDateTimeString(),
+        ];
+
+        if ($includeToken) {
+            $data['access_token'] = $user->currentAccessToken()?->plainTextToken
+                ?? $user->createToken('auth_token')->plainTextToken;
         }
 
         return $data;
+    }
+
+    /**
+     * Get user's profile completion status
+     *
+     * @param User $user
+     * @return array
+     */
+    private function getUserProfileStatus(User $user): array
+    {
+        $role = $user->getRoleNames()->first() ?? 'unassigned';
+
+        $hasCompletedDetails = false;
+        $primaryLocationId   = null;
+
+        // Load missing relationships only when needed
+        if (!$user->relationLoaded('farmer') && $role === 'Farmer') {
+            $user->load('farmer');
+        }
+        if (!$user->relationLoaded('veterinarian') && $role === 'Vet') {
+            $user->load('veterinarian');
+        }
+        if (!$user->relationLoaded('researcher') && $role === 'Researcher') {
+            $user->load('researcher');
+        }
+
+        // Always load primary location from the user → works for ALL roles
+        if (!$user->relationLoaded('locations')) {
+            $user->load(['locations' => fn($q) => $q->wherePivot('is_primary', true)]);
+        }
+
+        switch ($role) {
+            case 'Farmer':
+                $hasCompletedDetails = $user->farmer !== null;
+                $primaryLocationId   = $user->farmer?->location_id;
+                break;
+
+            case 'Vet':
+                $hasCompletedDetails = $user->veterinarian !== null;
+                $primaryLocationId   = $user->veterinarian?->location_id;
+                break;
+
+            case 'Researcher':
+                $hasCompletedDetails = $user->researcher !== null;
+                break;
+
+            default:
+                $hasCompletedDetails = true;
+                break;
+        }
+
+        // Primary location comes from the pivot for researchers (and fallback for everyone)
+        $primaryLocation = $user->locations->first();
+        $primaryLocationId = $primaryLocationId ?? $primaryLocation?->id;
+
+        return [
+            'has_location'          => $primaryLocationId !== null,
+            'has_location'          => (bool) $primaryLocation,
+            'primary_location_id'   => $primaryLocationId,
+            'has_completed_details' => $hasCompletedDetails,
+        ];
     }
 
     // ---
@@ -126,11 +217,7 @@ class UserController extends Controller
     // ---
     public function store(Request $request): JsonResponse
     {
-        // --- START DUAL LOGIC: Registration & Initial Role Assignment ---
         try {
-
-            // ... (Log & Validation - Unchanged)
-
             Log::info('Registration attempt started.', [
                 'request_data' => $request->except(['password', 'password_confirmation']),
                 'ip'           => $request->ip(),
@@ -138,9 +225,7 @@ class UserController extends Controller
 
             $request->validate($this->getValidationRules($request));
 
-            $role_name = $request->input('role', 'unassigned');
             $phone_number = $request->phone_number;
-
             $username = $this->generateUsername($request->lastname, $phone_number);
 
             $userData = [
@@ -162,49 +247,33 @@ class UserController extends Controller
 
             $user = User::create($userData);
 
-            $role = Role::where('name', $role_name)->first();
-
-            if ($role) {
-                $user->assignRole($role);
-
-                // CRITICAL FIX: Include the required 'role_id' from the Spatie Role model
-                UserRole::create([
-                    'user_id' => $user->id,
-                    'role' => $role_name, // Keeping the string role for convenience/readability
-                    'role_id' => $role->id, // <--- THIS IS THE FIX
-                ]);
-
+            // CRITICAL FIX: Assign 'unassigned' role
+            $unassignedRole = Role::where('name', 'unassigned')->first();
+            if ($unassignedRole) {
+                $user->syncRoles([$unassignedRole]);
+                Log::info('Assigned "unassigned" role during registration.', ['user_id' => $user->id]);
             } else {
-                // Log severe error if the 'unassigned' role is missing from the Spatie roles table
-                Log::error("Spatie Role '$role_name' not found during registration. User created without a role.", [
-                    'user_id' => $user->id,
-                    'role_name' => $role_name,
-                ]);
+                Log::warning('The "unassigned" role does not exist in the roles table. Ensure it is seeded.');
             }
 
-            DB::commit(); // Commit transaction if everything succeeded
+            DB::commit();
 
             event(new Registered($user));
             $token = $user->createToken('auth_token')->plainTextToken;
 
-            Log::info('Registration and role assignment complete.', [
-                'user_id' => $user->id,
-                'role' => $role_name,
-            ]);
 
             return response()->json([
                 'status'  => 'success',
                 'code'    => Response::HTTP_CREATED,
                 'message' => 'User registered successfully. Proceed to login.',
                 'data'    => [
-                    'user'         => $this->formatUserData($user->fresh()),
+                    // Ensure the user is refreshed with the role loaded
+                    'user'         => $this->formatUserData($user->fresh()->load('roles')),
                     'access_token' => $token,
                     'token_type'   => 'Bearer',
                 ],
             ], Response::HTTP_CREATED);
-
         } catch (ValidationException $e) {
-            // ... (Validation error handling - Unchanged)
             DB::rollBack();
             Log::warning('Registration validation failed.', [
                 'errors'  => $e->errors(),
@@ -217,9 +286,7 @@ class UserController extends Controller
                 'message' => 'Validation failed. Please check the fields.',
                 'errors'  => $e->errors(),
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
-
         } catch (Exception $e) {
-            // ... (Critical error handling - Unchanged)
             DB::rollBack();
 
             Log::error('Registration failed with critical server error: ' . $e->getMessage(), [
@@ -239,7 +306,7 @@ class UserController extends Controller
     public function assignRole(Request $request)
     {
         $user = $request->user();
-        $requestedRole = $request->input('role'); // e.g., "Farmer", "Vet", etc.
+        $requestedRole = $request->input('role');
 
         // === VALIDATION ===
         $request->validate([
@@ -248,18 +315,17 @@ class UserController extends Controller
 
         Log::info('Role Assignment Started', [
             'user_id'        => $user->id,
-            'full_name'      => $user->full_name ?? 'N/A',
-            'phone'          => $user->phone_number,
             'requested_role' => $requestedRole,
         ]);
 
         // === CHECK IF USER ALREADY HAS A REAL ROLE ===
-        $existing = UserRole::where('user_id', $user->id)
-            ->whereNotNull('role_id') // real role assigned
-            ->first();
+        $currentRoleName = $user->getRoleNames()->first();
 
-        if ($existing) {
-            $currentRoleName = Role::find($existing->role_id)->name ?? 'Unknown';
+        if ($currentRoleName && $currentRoleName !== 'unassigned') {
+            Log::info('User already has role', [
+                'user_id' => $user->id,
+                'current_role' => $currentRoleName,
+            ]);
 
             return response()->json([
                 'status'  => 'success',
@@ -274,20 +340,13 @@ class UserController extends Controller
         try {
             $role = Role::where('name', $requestedRole)->firstOrFail();
 
-            // Save only role_id — no more 'role' string column needed
-            UserRole::updateOrCreate(
-                ['user_id' => $user->id],
-                ['role_id' => $role->id]
-            );
-
-            // Optional: remove any leftover "unassigned" row
-            UserRole::where('user_id', $user->id)
-                ->whereNull('role_id')
-                ->delete();
+            // Sync the new role (this removes 'unassigned')
+            $user->syncRoles([$role]);
 
             DB::commit();
 
-            $user = $user->fresh(); // reload relationships if any
+            // Reload user with fresh roles relationship
+            $user->load('roles');
 
             Log::info('Role Assignment SUCCESS', [
                 'user_id'       => $user->id,
@@ -299,7 +358,6 @@ class UserController extends Controller
                 'message' => 'Hongera! Sasa wewe ni ' . $this->swahiliRole($requestedRole) . ' 🎉',
                 'user'    => $this->formatUserData($user, true),
             ], 201);
-
         } catch (\Exception $e) {
             DB::rollBack();
 
@@ -316,7 +374,7 @@ class UserController extends Controller
         }
     }
 
-// Beautiful Swahili role names
+    // Beautiful Swahili role names
     private function swahiliRole($role)
     {
         return match ($role) {
@@ -324,6 +382,7 @@ class UserController extends Controller
             'Vet'         => 'Daktari wa Mifugo',
             'Researcher'  => 'Mtafiti',
             'Admin'       => 'Msimamizi',
+            'unassigned'  => 'Hujachagua Jukumu',
             default       => $role
         };
     }
@@ -496,17 +555,28 @@ class UserController extends Controller
             ]);
 
             $loginInput = $request->login;
-            $user = null;
 
-            // Search by phone, email, or username to find the user
-            $user = User::with('roles')->where(function ($query) use ($loginInput) {
-                $query->where('phone_number', $loginInput)
-                    ->orWhere('email', $loginInput)
-                    ->orWhere('username', $loginInput);
-            })->first();
+            $user = User::with([
+                'roles',
+                'farmer.location',                    // Farmer has a direct location_id → OK
+                'veterinarian.location',              // Vet has a direct location_id → OK
+                'researcher',                         // Just load the researcher record
+                'locations' => fn($q) => $q->wherePivot('is_primary', true) // Load primary location for EVERYONE (including Researchers)
+            ])
+                ->where(function ($query) use ($loginInput) {
+                    $query->where('phone_number', $loginInput)
+                        ->orWhere('email', $loginInput)
+                        ->orWhere('username', $loginInput);
+                })
+                ->first();
 
-            // Authentication Failure (Credentials or User Not Found)
+            // Authentication Failure
             if (!$user || !Hash::check($request->password, $user->password)) {
+                Log::warning('Login failed: Invalid credentials', [
+                    'login_input' => $loginInput,
+                    'ip' => $request->ip(),
+                ]);
+
                 return response()->json([
                     'status'  => 'error',
                     'code'    => Response::HTTP_UNAUTHORIZED,
@@ -516,6 +586,11 @@ class UserController extends Controller
 
             // Account Status Check
             if (!$user->is_active) {
+                Log::warning('Login blocked: Account deactivated', [
+                    'user_id' => $user->id,
+                    'email' => $user->email,
+                ]);
+
                 return response()->json([
                     'status'  => 'error',
                     'code'    => Response::HTTP_FORBIDDEN,
@@ -523,16 +598,20 @@ class UserController extends Controller
                 ], Response::HTTP_FORBIDDEN);
             }
 
-            $userRole = $user->getRoleNames()->first();
+            // Get the role reliably
+            $userRole = $user->getRoleNames()->first() ?? 'unassigned';
 
             // === ROLE-BASED LOGIN ENFORCEMENT ===
-
-            // Check if the user has a strict role (Admin, Vet, Researcher)
             if (in_array($userRole, $this->strict_roles)) {
-                // Strict roles MUST login using email only
                 $isLoginInputEmail = ($loginInput === $user->email && !is_null($user->email));
 
                 if (!$isLoginInputEmail) {
+                    Log::warning('Login blocked: Strict role must use email', [
+                        'user_id' => $user->id,
+                        'role' => $userRole,
+                        'login_input' => $loginInput,
+                    ]);
+
                     return response()->json([
                         'status'  => 'error',
                         'code'    => Response::HTTP_UNAUTHORIZED,
@@ -541,23 +620,42 @@ class UserController extends Controller
                 }
             }
 
-            // FARMER ROLE: Can login with phone, email, or username
-            // No additional restrictions - they've already been authenticated above
-
-            // === END ENFORCEMENT ===
-
             // Update last login time
             $user->update(['last_login' => now()]);
 
             // Generate access token
             $token = $user->createToken('auth_token')->plainTextToken;
 
+            // Get status using the helper function
+            $status = $this->getUserProfileStatus($user);
+
+            Log::info('Login successful', [
+                'user_id' => $user->id,
+                'role' => $userRole,
+                'has_location' => $status['has_location'],
+                'has_completed_details' => $status['has_completed_details'],
+                'ip' => $request->ip(),
+            ]);
+
             return response()->json([
                 'status'  => 'success',
                 'code'    => Response::HTTP_OK,
                 'message' => 'Login successful.',
                 'data'    => [
-                    'user'         => $this->formatUserData($user),
+                    'user' => [
+                        'id' => $user->id,
+                        'firstname' => $user->firstname,
+                        'lastname' => $user->lastname,
+                        'email' => $user->email,
+                        'phone_number' => $user->phone_number,
+                        'username' => $user->username,
+                        'is_active' => $user->is_active,
+                        'role' => $userRole,
+                        'has_location' => $status['has_location'],
+                        'primary_location_id' => $status['primary_location_id'],
+                        'has_completed_details' => $status['has_completed_details'],
+                        'last_login' => $user->last_login,
+                    ],
                     'access_token' => $token,
                     'token_type'   => 'Bearer',
                 ],
@@ -570,11 +668,17 @@ class UserController extends Controller
                 'errors'  => $e->errors(),
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
         } catch (Exception $e) {
-            Log::error('Login error: ' . $e->getMessage());
+            Log::error('Login error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+                'ip' => $request->ip(),
+                'debug_message' => $e->getMessage(),
+            ]);
+
             return response()->json([
                 'status'  => 'error',
                 'code'    => Response::HTTP_INTERNAL_SERVER_ERROR,
                 'message' => 'Login failed. Try again.',
+                'debug' => config('app.debug') ? $e->getMessage() : null,
             ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
     }

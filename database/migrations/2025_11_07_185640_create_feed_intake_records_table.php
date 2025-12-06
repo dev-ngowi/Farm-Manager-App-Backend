@@ -6,18 +6,26 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    /**
+     * Run the migrations.
+     */
     public function up(): void
     {
         Schema::create('feed_intake_records', function (Blueprint $table) {
-            $table->id('intake_id'); // BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY
+            // FIX 1: Use standard $table->id() to create the primary key 'id'
+            $table->id();
 
+            // FIX 2: Correcting the 'feed_id' reference.
+            // It must reference the primary key column ('id') in the 'feed_inventory' table.
+            $table->foreignId('feed_id')
+                  ->constrained('feed_inventory') // Removed the explicit 'feed_id' column reference
+                  ->onDelete('cascade');
+
+            // Assuming 'livestock' table has an 'animal_id' primary key. If it uses 'id',
+            // this constraint will also need correction (see note below).
             $table->foreignId('animal_id')
                   ->constrained('livestock', 'animal_id')
-                  ->onDelete('cascade'); // If animal sold/deceased → delete feed history
-
-            $table->foreignId('feed_id')
-                  ->constrained('feed_inventory', 'feed_id')
-                  ->onDelete('cascade'); // If feed type deleted → clean up records
+                  ->onDelete('cascade');
 
             $table->date('intake_date');
             $table->decimal('quantity', 10, 2); // e.g., 5.75 Kg
@@ -28,23 +36,22 @@ return new class extends Migration
             $table->text('notes')->nullable();
 
             $table->timestamp('created_at')->useCurrent();
-            // updated_at not needed unless editing past records
+            $table->timestamp('updated_at')->nullable(); // Added updated_at for completeness
 
-            // Indexes for blazing-fast queries
+            // Indexes
             $table->index('animal_id');
             $table->index('feed_id');
             $table->index('intake_date');
             $table->index('feeding_time');
-
-            // Most common queries: daily total per animal
             $table->index(['animal_id', 'intake_date']);
             $table->index(['feed_id', 'intake_date']);
-
-            // Monthly reports
             $table->index(['intake_date', 'animal_id']);
         });
     }
 
+    /**
+     * Reverse the migrations.
+     */
     public function down(): void
     {
         Schema::dropIfExists('feed_intake_records');

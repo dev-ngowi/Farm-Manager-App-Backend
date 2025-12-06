@@ -289,6 +289,18 @@ class Livestock extends Model
     // SCOPES
     // =================================================================
 
+    /**
+     * Scope a query to only include livestock owned by a specific farmer.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query
+     * @param  int  $farmerId
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeOwnedByFarmer($query, int $farmerId)
+    {
+        return $query->where('farmer_id', $farmerId);
+    }
+
     public function scopeFemale($query)
     {
         return $query->where('sex', 'Female');

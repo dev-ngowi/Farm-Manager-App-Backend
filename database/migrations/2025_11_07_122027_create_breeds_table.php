@@ -9,10 +9,10 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('breeds', function (Blueprint $table) {
-            $table->id(); 
-            $table->unsignedBigInteger('species_id'); 
+            $table->id();
+            $table->unsignedBigInteger('species_id');
             $table->foreign('species_id')
-            ->references('id') 
+            ->references('id')
             ->on('species')
             ->onUpdate('cascade')
             ->onDelete('restrict');
@@ -26,7 +26,7 @@ return new class extends Migration
             $table->decimal('average_weight_kg', 8, 2)->nullable();
             $table->tinyInteger('maturity_months')->unsigned()->nullable();
 
-            $table->timestamp('created_at')->useCurrent();
+            $table->timestamps();
 
             // Indexes
             $table->index('species_id');

@@ -3,300 +3,200 @@
 namespace App\Http\Controllers\Api\Farmer;
 
 use App\Http\Controllers\Controller;
-use App\Models\OffspringRecord;
-use App\Models\Livestock;
-use App\Models\BirthRecord;
+use App\Models\Offspring;
+use App\Models\Delivery; // Used for context in store method
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
-use Illuminate\Support\Facades\DB;
-use Carbon\Carbon;
-use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Validation\Rule;
 
 class OffspringController extends Controller
 {
-    // =================================================================
-    // INDEX: List offspring with filters
-    // =================================================================
+    /**
+     * Common query scope to ensure the offspring belongs to the farmer.
+     */
+    private function farmerScope($query, $farmerId)
+    {
+        // Offspring belongs to a Delivery, which belongs to an Insemination, which belongs to a Dam (Livestock), which belongs to the Farmer.
+        return $query->whereHas('delivery.insemination.dam.farmer', fn($q) => $q->where('farmer_id', $farmerId));
+    }
+
+    /**
+     * Display a listing of the offspring records for the farmer.
+     * This includes basic related data for a list view.
+     */
     public function index(Request $request)
     {
-        $query = OffspringRecord::whereHas('farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
-            ->with([
-                'birth.breeding.dam' => fn($q) => $q->select('animal_id', 'tag_number', 'name'),
-                'birth.breeding.sire' => fn($q) => $q->select('animal_id', 'tag_number', 'name'),
-                'livestock' => fn($q) => $q->select('animal_id', 'tag_number', 'name', 'sex', 'current_weight_kg'),
+        $farmerId = $request->user()->farmer->id;
+
+        $offspring = Offspring::with([
+                // Fetch the dam's tag number for context
+                'delivery.insemination.dam:id,tag_number,name',
+                // Check if already registered as livestock
+                'livestock:id,tag_number,name'
             ])
-            ->withCount(['income as total_income', 'expenses as total_expenses'])
-            ->orderByDesc('birth.birth_date');
+            ->where(function ($query) use ($farmerId) {
+                return $this->farmerScope($query, $farmerId);
+            })
+            ->latest('id')
+            ->paginate(15);
 
-        // Filters
-        if ($request->boolean('unregistered')) $query->unregistered();
-        if ($request->boolean('healthy')) $query->healthy();
-        if ($request->boolean('weak')) $query->weak();
-        if ($request->boolean('deceased')) $query->deceased();
-        if ($request->boolean('needs_colostrum')) $query->needsColostrum();
-        if ($request->boolean('critical')) $query->critical();
-        if ($request->filled('gender')) $query->{strtolower($request->gender)}();
-        if ($request->boolean('twins')) $query->twins();
-        if ($request->boolean('high_value')) $query->highValue();
-        if ($request->boolean('ready_for_weaning')) $query->readyForWeaning();
-        if ($request->boolean('profitable')) $query->profitableCalves();
-
-        $offspring = $query->paginate(20);
-
-        return response()->json([
-            'status' => 'success',
-            'data' => $offspring
-        ]);
+        return response()->json(['status' => 'success', 'data' => $offspring]);
     }
 
-    // =================================================================
-    // SHOW: Single offspring
-    // =================================================================
+    /**
+     * Display the specified offspring record.
+     * Includes all related details for a detail view.
+     */
     public function show(Request $request, $offspring_id)
     {
-        $offspring = OffspringRecord::whereHas('farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
-            ->with([
-                'birth.breeding.dam.breed',
-                'birth.breeding.sire',
-                'livestock',
-                'weightRecords' => fn($q) => $q->orderByDesc('record_date'),
-                'income',
-                'expenses'
+        $offspring = Offspring::with([
+                'delivery.insemination.dam.species',
+                'delivery.insemination.sire',
+                'livestock'
             ])
+            ->where(function ($query) use ($request) {
+                return $this->farmerScope($query, $request->user()->farmer->id);
+            })
             ->findOrFail($offspring_id);
 
-        return response()->json([
-            'status' => 'success',
-            'data' => $offspring
-        ]);
+        return response()->json(['status' => 'success', 'data' => $offspring]);
     }
 
-    // =================================================================
-    // STORE: Register offspring as livestock (after birth)
-    // =================================================================
+    /**
+     * Store a newly created offspring record in storage.
+     * This is useful if a calf was missed during the initial delivery registration.
+     */
     public function store(Request $request)
     {
+        $farmerId = $request->user()->farmer->id;
+
         $validator = Validator::make($request->all(), [
-            'offspring_id' => 'required|exists:offspring_records,offspring_id',
-            'tag_number' => 'required|string|max:50|unique:livestock,tag_number',
-            'name' => 'nullable|string|max:100',
+            'delivery_id' => [
+                'required',
+                'exists:deliveries,id',
+                // Ensure the delivery belongs to an animal owned by the farmer
+                Rule::exists('deliveries', 'id')->where(function ($query) use ($farmerId) {
+                    $query->whereHas('insemination.dam.farmer', fn($q) => $q->where('farmer_id', $farmerId));
+                }),
+            ],
+            'temporary_tag' => 'nullable|string|max:50',
+            'gender' => 'required|in:Male,Female,Unknown',
+            'birth_weight_kg' => 'required|numeric|min:0',
+            'birth_condition' => 'required|in:Vigorous,Weak,Stillborn',
+            'colostrum_intake' => 'required|in:Adequate,Partial,Insufficient,None',
+            'navel_treated' => 'required|boolean',
+            'notes' => 'nullable|string|max:500',
         ]);
 
         if ($validator->fails()) {
-            return response()->json([
-                'status' => 'error',
-                'errors' => $validator->errors()
-            ], 422);
+            return response()->json(['status' => 'error', 'errors' => $validator->errors()], 422);
         }
 
-        $offspring = OffspringRecord::where('offspring_id', $request->offspring_id)
-            ->whereHas('farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
-            ->firstOrFail();
+        $delivery = Delivery::find($request->delivery_id);
 
-        if ($offspring->is_registered) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Ndama tayari amesajiliwa kama mifugo'
-            ], 400);
-        }
-
-        DB::transaction(function () use ($request, $offspring) {
-            $livestock = Livestock::create([
-                'farmer_id' => $offspring->farmer()->first()->farmer_id,
-                'species_id' => $offspring->dam()->first()->species_id,
-                'breed_id' => $offspring->dam()->first()->breed_id,
-                'tag_number' => $request->tag_number,
-                'name' => $request->name,
-                'sex' => $offspring->gender,
-                'date_of_birth' => $offspring->birth->birth_date,
-                'weight_at_birth_kg' => $offspring->weight_at_birth_kg,
-                'dam_id' => $offspring->dam()->first()->animal_id,
-                'sire_id' => $offspring->sire()->first()->animal_id,
-                'status' => 'Active',
-                'source' => 'Born on Farm',
-            ]);
-
-            $offspring->update([
-                'livestock_id' => $livestock->animal_id,
-                'registered_as_livestock' => true,
-            ]);
-        });
+        $offspring = $delivery->offspring()->create($validator->validated());
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Ndama amesajiliwa kama mifugo kikamilifu',
-            'data' => $offspring->load('livestock')
+            'message' => 'Offspring record created successfully',
+            'data' => $offspring
         ], 201);
     }
 
-    // =================================================================
-    // UPDATE: Edit offspring record
-    // =================================================================
+    /**
+     * Update the specified offspring record in storage.
+     */
     public function update(Request $request, $offspring_id)
     {
-        $offspring = OffspringRecord::whereHas('farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
+        $offspring = Offspring::where(function ($query) use ($request) {
+                return $this->farmerScope($query, $request->user()->farmer->id);
+            })
             ->findOrFail($offspring_id);
 
         $validator = Validator::make($request->all(), [
-            'health_status' => 'sometimes|in:Healthy,Weak,Deceased',
+            'temporary_tag' => 'nullable|string|max:50',
+            'gender' => 'sometimes|in:Male,Female,Unknown',
+            'birth_weight_kg' => 'sometimes|numeric|min:0',
+            'birth_condition' => 'sometimes|in:Vigorous,Weak,Stillborn',
             'colostrum_intake' => 'sometimes|in:Adequate,Partial,Insufficient,None',
-            'notes' => 'nullable|string|max:1000',
+            'navel_treated' => 'sometimes|boolean',
+            'notes' => 'nullable|string|max:500',
         ]);
 
         if ($validator->fails()) {
-            return response()->json([
-                'status' => 'error',
-                'errors' => $validator->errors()
-            ], 422);
+            return response()->json(['status' => 'error', 'errors' => $validator->errors()], 422);
         }
 
-        $offspring->update($request->only(['health_status', 'colostrum_intake', 'notes']));
+        $offspring->update($validator->validated());
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Rekodi ya ndama imesasishwa',
-            'data' => $offspring->fresh()
+            'message' => 'Offspring record updated successfully',
+            'data' => $offspring
         ]);
     }
 
-    // =================================================================
-    // DESTROY: Delete offspring (only if not registered)
-    // =================================================================
+    /**
+     * Remove the specified offspring record from storage.
+     */
     public function destroy(Request $request, $offspring_id)
     {
-        $offspring = OffspringRecord::whereHas('farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
+        $offspring = Offspring::where(function ($query) use ($request) {
+                return $this->farmerScope($query, $request->user()->farmer->id);
+            })
             ->findOrFail($offspring_id);
 
-        if ($offspring->is_registered) {
-            return response()->json([
+        // Prevent deletion if already registered as primary Livestock
+        if ($offspring->livestock_id) {
+             return response()->json([
                 'status' => 'error',
-                'message' => 'Haiwezi kufutwa: Ndama amesajiliwa kama mifugo'
-            ], 400);
+                'message' => 'Cannot delete offspring already registered as livestock.'
+            ], 403);
         }
 
         $offspring->delete();
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Rekodi ya ndama imefutwa'
-        ]);
+            'message' => 'Offspring record deleted successfully'
+        ], 200);
     }
 
-    // =================================================================
-    // SUMMARY: Dashboard KPIs
-    // =================================================================
-    public function summary(Request $request)
+    /**
+     * Register an Offspring record as a new Livestock animal. (Existing method, slightly refined)
+     */
+    public function register(Request $request, $offspring_id)
     {
-        $farmerId = $request->user()->farmer->id;
-
-        $offspring = OffspringRecord::whereHas('farmer', fn($q) => $q->where('farmer_id', $farmerId))
-            ->get();
-
-        return response()->json([
-            'status' => 'success',
-            'data' => [
-                'total_born' => $offspring->count(),
-                'registered' => $offspring->where('is_registered', true)->count(),
-                'unregistered' => $offspring->where('needs_registration', true)->count(),
-                'healthy' => $offspring->where('health_status', 'Healthy')->count(),
-                'weak' => $offspring->where('health_status', 'Weak')->count(),
-                'deceased' => $offspring->where('health_status', 'Deceased')->count(),
-                'twins' => $offspring->where('is_twin', true)->count(),
-                'colostrum_risk' => $offspring->whereIn('colostrum_status', ['Risk', 'High Risk', 'Critical'])->count(),
-                'avg_adg' => $offspring->avg('adg_since_birth'),
-                'total_market_value' => $offspring->sum('market_value_estimate'),
-                'profitable_calves' => $offspring->where('net_profit', '>', 0)->count(),
-            ]
-        ]);
-    }
-
-    // =================================================================
-    // ALERTS: Critical offspring
-    // =================================================================
-    public function alerts(Request $request)
-    {
-        $farmerId = $request->user()->farmer->id;
-
-        $critical = OffspringRecord::critical()
-            ->whereHas('farmer', fn($q) => $q->where('farmer_id', $farmerId))
-            ->with(['birth.breeding.dam'])
-            ->latest('birth.birth_date')
-            ->take(10)
-            ->get();
-
-        $unregistered = OffspringRecord::unregistered()
-            ->whereHas('farmer', fn($q) => $q->where('farmer_id', $farmerId))
-            ->where('health_status', '!=', 'Deceased')
-            ->with(['birth.breeding.dam'])
-            ->latest('birth.birth_date')
-            ->take(10)
-            ->get();
-
-        return response()->json([
-            'status' => 'success',
-            'data' => [
-                'critical_health' => $critical,
-                'needs_registration' => $unregistered,
-                'total_alerts' => $critical->count() + $unregistered->count(),
-            ]
-        ]);
-    }
-
-    // =================================================================
-    // DROPDOWNS: For registration form
-    // =================================================================
-    public function dropdowns(Request $request)
-    {
-        $farmerId = $request->user()->farmer->id;
-
-        return response()->json([
-            'status' => 'success',
-            'data' => [
-                'unregistered_offspring' => OffspringRecord::unregistered()
-                    ->whereHas('farmer', fn($q) => $q->where('farmer_id', $farmerId))
-                    ->whereIn('health_status', ['Healthy', 'Weak'])
-                    ->with(['birth.breeding.dam'])
-                    ->get()
-                    ->map(fn($o) => [
-                        'value' => $o->offspring_id,
-                        'label' => "Ndama #{$o->animal_tag} - Mama: {$o->dam()->first()->tag_number} - {$o->gender}",
-                    ]),
-                'genders' => [
-                    ['value' => 'Male', 'label' => 'Dume'],
-                    ['value' => 'Female', 'label' => 'Jike'],
-                ],
-            ]
-        ]);
-    }
-
-    // =================================================================
-    // PDF: Download offspring report
-    // =================================================================
-    public function downloadPdf(Request $request, $offspring_id)
-    {
-        $offspring = OffspringRecord::whereHas('farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
-            ->with([
-                'birth.breeding.dam.breed',
-                'birth.breeding.sire',
-                'livestock',
-                'weightRecords' => fn($q) => $q->orderByDesc('record_date')->limit(5),
-            ])
+        $offspring = Offspring::where(function ($query) use ($request) {
+                return $this->farmerScope($query, $request->user()->farmer->id);
+            })
             ->findOrFail($offspring_id);
 
-        $farmer = $request->user()->farmer;
+        $validator = Validator::make($request->all(), [
+            'tag_number' => 'required|string|max:50|unique:livestock,tag_number',
+            'name' => 'nullable|string|max:100',
+            'species_id' => 'required|exists:species,id',
+            'breed_id' => 'required|exists:breeds,id',
+        ]);
 
-        $pdf = Pdf::loadView('pdf.offspring', compact('offspring', 'farmer'))
-            ->setPaper('a4', 'portrait')
-            ->setOptions([
-                'defaultFont' => 'DejaVu Sans',
-                'isHtml5ParserEnabled' => true,
-                'isPhpEnabled' => true,
-                'isRemoteEnabled' => true,
-            ]);
+        if ($validator->fails()) {
+            return response()->json(['status' => 'error', 'errors' => $validator->errors()], 422);
+        }
 
-        $filename = "Ripoti-Ndama-{$offspring->animal_tag}-" .
-            Carbon::parse($offspring->birth->birth_date)->format('d-m-Y') . ".pdf";
+        if ($offspring->livestock_id) {
+            return response()->json(['status' => 'error', 'message' => 'Offspring already registered'], 400);
+        }
 
-        return $pdf->download($filename);
+        // Assuming registerAsLivestock is a method on the Offspring model
+        $livestock = $offspring->registerAsLivestock(array_merge(
+            $validator->validated(),
+            ['farmer_id' => $request->user()->farmer->id]
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Offspring registered as livestock',
+            'data' => $livestock
+        ], 201);
     }
 }

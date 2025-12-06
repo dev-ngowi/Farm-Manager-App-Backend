@@ -9,15 +9,16 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('vet_actions', function (Blueprint $table) {
-            $table->id();
+            $table->id('action_id'); // 1. Using 'action_id' as primary key
 
             $table->foreignId('health_id')
                   ->constrained('health_reports', 'health_id')
                   ->onDelete('cascade');
 
             $table->foreignId('diagnosis_id')
+                  ->nullable() // Allowing null if action is taken without formal diagnosis
                   ->constrained('diagnosis_responses')
-                  ->onDelete('cascade');
+                  ->onDelete('set null');
 
             $table->foreignId('vet_id')
                   ->constrained('veterinarians')
@@ -28,7 +29,7 @@ return new class extends Migration
                 'Prescription', 'Surgery', 'Consultation'
             ]);
 
-            $table->date('action_date')->default(now());
+            $table->date('action_date')->useCurrent(); // Defaulting to current date
             $table->time('action_time')->nullable();
 
             $table->enum('action_location', [
@@ -44,11 +45,11 @@ return new class extends Migration
             // Advisory
             $table->text('advice_notes')->nullable();
 
-            // Vaccination
+            // Vaccination (Dose administered TODAY)
             $table->string('vaccine_name')->nullable();
             $table->string('vaccine_batch_number')->nullable();
             $table->date('vaccination_date')->nullable();
-            $table->date('next_vaccination_due')->nullable();
+            // Removed: $table->date('next_vaccination_due')->nullable();
 
             // Prescription / Surgery
             $table->text('prescription_details')->nullable();

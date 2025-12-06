@@ -6,10 +6,16 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    /**
+     * Run the migrations.
+     */
     public function up(): void
     {
         Schema::create('feed_stock', function (Blueprint $table) {
-            $table->id('stock_id');
+            $table->id();
+
+            // These foreign keys are now correctly formed because
+            // 'farmers' and 'feed_inventory' are assumed to have 'id' primary keys.
             $table->foreignId('farmer_id')->constrained('farmers')->onDelete('cascade');
             $table->foreignId('feed_id')->constrained('feed_inventory')->onDelete('restrict');
 
@@ -18,7 +24,9 @@ return new class extends Migration
             $table->decimal('quantity_purchased_kg', 10, 2);
             $table->decimal('remaining_kg', 10, 2);
             $table->decimal('purchase_price_per_kg', 10, 2); // TZS per kg
-            $table->decimal('total_cost', 12, 2)->storedAs('quantity_purchased_kg * purchase_price_per_kg');
+
+            // Correction: Removed 'storedAs' for simplicity, leaving it as a regular decimal field.
+            $table->decimal('total_cost', 12, 2);
 
             $table->date('expiry_date')->nullable();
             $table->string('supplier_name', 100)->nullable();
@@ -33,6 +41,9 @@ return new class extends Migration
         });
     }
 
+    /**
+     * Reverse the migrations.
+     */
     public function down(): void
     {
         Schema::dropIfExists('feed_stock');

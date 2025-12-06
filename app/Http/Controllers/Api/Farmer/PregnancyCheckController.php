@@ -4,191 +4,274 @@ namespace App\Http\Controllers\Api\Farmer;
 
 use App\Http\Controllers\Controller;
 use App\Models\PregnancyCheck;
-use App\Models\BreedingRecord;
+use App\Models\Insemination;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
-use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 
 class PregnancyCheckController extends Controller
 {
-    // =================================================================
-    // INDEX: List checks for farmer's breedings
-    // =================================================================
+    /**
+     * Display a listing of the resource (Pregnancy Checks).
+     * Filters by result or insemination_id.
+     */
     public function index(Request $request)
     {
-        $query = PregnancyCheck::whereHas('breeding.dam.farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
+        // Get the farmer's ID securely
+        $farmerId = $request->user()->farmer->id;
+
+        $query = PregnancyCheck::query()
+            // Ensure all checks belong to inseminations tied to the current farmer
+            ->whereHas('insemination.dam.farmer', fn($q) => $q->where('farmer_id', $farmerId))
             ->with([
-                'breeding.dam' => fn($q) => $q->select('animal_id', 'tag_number', 'name'),
-                'breeding.sire' => fn($q) => $q->select('animal_id', 'tag_number', 'name'),
-                'vet' => fn($q) => $q->select('id', 'user_id')->with('user:id,firstname,lastname')
-            ])
-            ->latest('check_date');
+                // Load insemination data, and nest the dam details
+                'insemination' => fn($q) => $q->select('id', 'dam_id', 'insemination_date')
+                    ->with(['dam:id,tag_number,name']),
+                'vet:id,name', // Assuming Vet is related to a User model
+            ]);
 
-        if ($request->filled('breeding_id')) {
-            $query->where('breeding_id', $request->breeding_id);
+        // Apply filters
+        if ($request->filled('result')) {
+            $query->where('result', $request->result);
         }
-        if ($request->boolean('pregnant')) $query->pregnant();
-        if ($request->boolean('twins')) $query->twinsDetected();
-        if ($request->boolean('due_soon')) $query->dueSoon(14);
-        if ($request->boolean('overdue')) $query->overdue();
+        if ($request->filled('insemination_id')) {
+            $query->where('insemination_id', $request->insemination_id);
+        }
 
-        $checks = $query->paginate(20);
+        $checks = $query->latest('check_date')->get();
 
         return response()->json([
             'status' => 'success',
-            'data' => $checks
+            'data' => $checks,
+            'meta' => ['total' => $checks->count()]
         ]);
     }
 
-    // =================================================================
-    // STORE: Record new pregnancy check
-    // =================================================================
+    /**
+     * Store a newly created resource in storage.
+     */
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'breeding_id' => 'required|exists:breeding_records,breeding_id',
-            'vet_id' => 'nullable|exists:veterinarians,id',
-            'check_date' => 'required|date|before:tomorrow',
-            'method' => 'required|in:Ultrasound,Palpation,Blood Test,Visual',
-            'result' => 'required|in:Pregnant,Not Pregnant,Unknown',
-            'expected_delivery_date' => 'nullable|date|after:check_date',
-            'fetus_count' => 'nullable|integer|min:1|max:6',
-            'notes' => 'nullable|string|max:1000',
+            'insemination_id' => 'required|exists:inseminations,id',
+            'check_date' => 'required|date|before_or_equal:today', // Must be checked today or earlier
+            // Rule to ensure check_date is after the insemination_date. Requires injecting Insemination model.
+            // Simplified here, assuming frontend handles basic validity.
+            'method' => 'required|in:Ultrasound,Palpation,Blood',
+            'result' => 'required|in:Pregnant,Not Pregnant,Reabsorbed',
+            'fetus_count' => 'nullable|integer|min:1', // Made nullable as it depends on result
+            'expected_delivery_date' => 'nullable|date|after:check_date', // Made nullable
+            'vet_id' => 'nullable|exists:users,id',
+            'notes' => 'nullable|string|max:500',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['status' => 'error', 'errors' => $validator->errors()], 422);
         }
 
-        $breeding = BreedingRecord::where('breeding_id', $request->breeding_id)
-            ->whereHas('dam.farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
-            ->firstOrFail();
+        // Find the insemination record belonging to the current farmer
+        $insemination = Insemination::whereHas('dam.farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
+            ->findOrFail($request->insemination_id);
 
-        $check = PregnancyCheck::create($request->all());
+        // Check if `check_date` is after `insemination_date` manually if not using a custom rule
+        if (Carbon::parse($request->check_date)->lessThanOrEqualTo(Carbon::parse($insemination->insemination_date))) {
+             return response()->json(['status' => 'error', 'message' => 'Check date must be after the insemination date.'], 422);
+        }
 
-        // Update breeding status if confirmed pregnant
-        if ($request->result === 'Pregnant') {
-            $breeding->update([
-                'status' => 'Confirmed Pregnant',
-                'expected_delivery_date' => $request->expected_delivery_date
+        return DB::transaction(function () use ($request, $insemination) {
+
+            $isPregnant = $request->result === 'Pregnant';
+
+            $check = PregnancyCheck::create([
+                'insemination_id' => $insemination->id,
+                'check_date' => $request->check_date,
+                'method' => $request->method,
+                'result' => $request->result,
+                'fetus_count' => $isPregnant ? $request->fetus_count : null,
+                'expected_delivery_date' => $isPregnant ? $request->expected_delivery_date : null,
+                'vet_id' => $request->vet_id,
+                'notes' => $request->notes,
             ]);
+
+            // 1. Update Insemination Status and Due Date
+            $insemination->update([
+                'status' => match ($request->result) {
+                    'Pregnant' => 'Confirmed Pregnant',
+                    'Not Pregnant' => 'Not Pregnant',
+                    'Reabsorbed' => 'Failed',
+                    default => 'Pending', // Fallback
+                },
+                'expected_delivery_date' => $isPregnant ? $request->expected_delivery_date : null,
+            ]);
+
+            // 2. Update Heat Cycle if not pregnant
+            if (!$isPregnant && $insemination->heatCycle) {
+                // Assuming $insemination->heatCycle is loaded or accessible via relationship
+                $insemination->heatCycle->update([
+                    'inseminated' => false,
+                    // Set next expected heat 21 days after the check date
+                    'next_expected_date' => Carbon::parse($request->check_date)->addDays(21),
+                ]);
+            }
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Pregnancy check recorded successfully.',
+                'data' => $check->load(['insemination.dam', 'vet'])
+            ], 201);
+        });
+    }
+
+    /**
+     * Display the specified resource.
+     */
+    public function show(Request $request, PregnancyCheck $check)
+    {
+        // Ensure the check belongs to the current farmer
+        if ($check->insemination->dam->farmer_id !== $request->user()->farmer->id) {
+            return response()->json(['status' => 'error', 'message' => 'Record not found.'], 404);
         }
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Ukaguzi wa mimba umeandikishwa',
-            'data' => $check->load('breeding.dam', 'vet')
-        ], 201);
+            'data' => $check->load(['insemination.dam', 'vet'])
+        ]);
     }
 
-    // =================================================================
-    // SHOW: Single check
-    // =================================================================
-    public function show(Request $request, $check_id)
+    /**
+     * Update the specified resource in storage.
+     */
+    public function update(Request $request, PregnancyCheck $check)
     {
-        $check = PregnancyCheck::whereHas('breeding.dam.farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
-            ->with(['breeding.dam', 'breeding.sire', 'vet.user', 'birthRecord'])
-            ->findOrFail($check_id);
-
-        return response()->json(['status' => 'success', 'data' => $check]);
-    }
-
-    // =================================================================
-    // UPDATE: Edit check
-    // =================================================================
-    public function update(Request $request, $check_id)
-    {
-        $check = PregnancyCheck::whereHas('breeding.dam.farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
-            ->findOrFail($check_id);
+        // Security check
+        if ($check->insemination->dam->farmer_id !== $request->user()->farmer->id) {
+            return response()->json(['status' => 'error', 'message' => 'Record not found.'], 404);
+        }
 
         $validator = Validator::make($request->all(), [
-            'method' => 'sometimes|in:Ultrasound,Palpation,Blood Test,Visual',
-            'result' => 'sometimes|in:Pregnant,Not Pregnant,Unknown',
+            'check_date' => 'sometimes|required|date|before_or_equal:today',
+            'method' => 'sometimes|required|in:Ultrasound,Palpation,Blood',
+            'result' => 'sometimes|required|in:Pregnant,Not Pregnant,Reabsorbed',
+            'fetus_count' => 'nullable|integer|min:1',
             'expected_delivery_date' => 'nullable|date|after:check_date',
-            'fetus_count' => 'nullable|integer|min:1|max:6',
-            'notes' => 'nullable|string|max:1000',
+            'vet_id' => 'nullable|exists:users,id',
+            'notes' => 'nullable|string|max:500',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['status' => 'error', 'errors' => $validator->errors()], 422);
         }
 
-        $check->update($request->only([
-            'method', 'result', 'expected_delivery_date', 'fetus_count', 'notes'
-        ]));
+        return DB::transaction(function () use ($request, $check) {
+            $isPregnant = $request->input('result', $check->result) === 'Pregnant';
 
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Ukaguzi wa mimba umesasishwa',
-            'data' => $check
-        ]);
+            // 1. Update the PregnancyCheck record
+            $check->update([
+                'check_date' => $request->check_date ?? $check->check_date,
+                'method' => $request->method ?? $check->method,
+                'result' => $request->result ?? $check->result,
+                // Adjust dependent fields based on the resulting status
+                'fetus_count' => $isPregnant ? $request->fetus_count : null,
+                'expected_delivery_date' => $isPregnant ? $request->expected_delivery_date : null,
+                'vet_id' => $request->vet_id ?? $check->vet_id,
+                'notes' => $request->notes ?? $check->notes,
+            ]);
+
+            // 2. Determine new Insemination status
+            $newResult = $request->input('result', $check->result);
+            $newStatus = match ($newResult) {
+                'Pregnant' => 'Confirmed Pregnant',
+                'Not Pregnant' => 'Not Pregnant',
+                'Reabsorbed' => 'Failed',
+                default => 'Pending',
+            };
+
+            // 3. Update Insemination Status and Due Date
+            $check->insemination->update([
+                'status' => $newStatus,
+                'expected_delivery_date' => $isPregnant ? $request->expected_delivery_date : null,
+            ]);
+
+            // 4. Update Heat Cycle if status changed to Not Pregnant/Failed
+            if (!$isPregnant && $check->insemination->heatCycle) {
+                $check->insemination->heatCycle->update([
+                    'inseminated' => false,
+                    'next_expected_date' => Carbon::parse($check->check_date)->addDays(21),
+                ]);
+            }
+            // Note: If the animal was previously marked as Not Pregnant and is now being marked as Pregnant
+            // the heat cycle update logic here might need more complexity, but this handles the basic flow.
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Pregnancy check updated successfully.',
+                'data' => $check->load(['insemination.dam', 'vet'])
+            ]);
+        });
     }
 
-    // =================================================================
-    // DESTROY: Delete check
-    // =================================================================
-    public function destroy(Request $request, $check_id)
+    /**
+     * Remove the specified resource from storage.
+     */
+    public function destroy(Request $request, PregnancyCheck $check)
     {
-        $check = PregnancyCheck::whereHas('breeding.dam.farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
-            ->findOrFail($check_id);
+        // Security check
+        if ($check->insemination->dam->farmer_id !== $request->user()->farmer->id) {
+            return response()->json(['status' => 'error', 'message' => 'Record not found.'], 404);
+        }
 
-        $check->delete();
+        return DB::transaction(function () use ($check) {
+            $insemination = $check->insemination;
 
-        return response()->json(['status' => 'success', 'message' => 'Ukaguzi umefutwa']);
-    }
+            $check->delete();
 
-    // =================================================================
-    // DROPDOWNS: For form
-    // =================================================================
-    public function dropdowns(Request $request)
-    {
-        $farmerId = $request->user()->farmer->id;
+            // After deleting a check, we need to reset the insemination status based on the remaining checks.
+            // If this was the *last* check, the status must revert to 'Pending'.
 
-        return response()->json([
-            'status' => 'success',
-            'data' => [
-                'breedings' => BreedingRecord::whereHas('dam.farmer', fn($q) => $q->where('farmer_id', $farmerId))
-                    ->where('status', '!=', 'Failed')
-                    ->with(['dam' => fn($q) => $q->select('animal_id', 'tag_number', 'name')])
-                    ->get()
-                    ->map(fn($b) => [
-                        'value' => $b->breeding_id,
-                        'label' => "{$b->dam->tag_number} - " . Carbon::parse($b->breeding_date)->format('d/m/Y')
-                    ]),
-                'methods' => [
-                    ['value' => 'Ultrasound', 'label' => 'Ultrasound'],
-                    ['value' => 'Palpation', 'label' => 'Kupapasa'],
-                    ['value' => 'Blood Test', 'label' => 'Damu'],
-                    ['value' => 'Visual', 'label' => 'Kwa Macho'],
-                ],
-                'results' => [
-                    ['value' => 'Pregnant', 'label' => 'Mimba'],
-                    ['value' => 'Not Pregnant', 'label' => 'Hapana Mimba'],
-                    ['value' => 'Unknown', 'label' => 'Haijulikani'],
-                ],
-            ]
-        ]);
-    }
+            // 1. Get the most recent *remaining* check for the insemination
+            $latestCheck = PregnancyCheck::where('insemination_id', $insemination->id)
+                ->latest('check_date')
+                ->first();
 
-    // =================================================================
-    // PDF: Download pregnancy check report
-    // =================================================================
-    public function downloadPdf(Request $request, $check_id)
-    {
-        $check = PregnancyCheck::whereHas('breeding.dam.farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
-            ->with(['breeding.dam', 'breeding.sire', 'vet.user', 'birthRecord'])
-            ->findOrFail($check_id);
+            if ($latestCheck) {
+                // If other checks exist, update status based on the latest one
+                $newStatus = match ($latestCheck->result) {
+                    'Pregnant' => 'Confirmed Pregnant',
+                    'Not Pregnant' => 'Not Pregnant',
+                    'Reabsorbed' => 'Failed',
+                    default => 'Pending',
+                };
+                $newDueDate = $latestCheck->result === 'Pregnant' ? $latestCheck->expected_delivery_date : null;
 
-        $farmer = $request->user()->farmer;
+                $insemination->update([
+                    'status' => $newStatus,
+                    'expected_delivery_date' => $newDueDate,
+                ]);
 
-        $pdf = Pdf::loadView('pdf.pregnancy-check', compact('check', 'farmer'))
-            ->setPaper('a4', 'portrait')
-            ->setOptions(['defaultFont' => 'DejaVu Sans']);
+                // Update heat cycle if the new latest result is not pregnant
+                if ($latestCheck->result !== 'Pregnant' && $insemination->heatCycle) {
+                    $insemination->heatCycle->update(['inseminated' => false]);
+                }
 
-        $filename = "Ripoti-Mimba-{$check->breeding->dam->tag_number}-" .
-            Carbon::parse($check->check_date)->format('d-m-Y') . ".pdf";
+            } else {
+                // 2. No other checks exist: Revert Insemination status to initial state
+                $insemination->update([
+                    'status' => 'Pending',
+                    // Keep the original expected delivery date (calculated after insemination)
+                ]);
 
-        return $pdf->download($filename);
+                // Reset heat cycle if it was marked as inseminated
+                 if ($insemination->heatCycle) {
+                     $insemination->heatCycle->update(['inseminated' => true]); // Revert to inseminated until next check
+                 }
+            }
+
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Pregnancy check deleted successfully.'
+            ], 200);
+        });
     }
 }

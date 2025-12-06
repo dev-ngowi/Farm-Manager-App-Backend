@@ -9,6 +9,8 @@ use App\Models\Breed;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 
 class LivestockController extends Controller
 {
@@ -88,10 +90,33 @@ class LivestockController extends Controller
     // =================================================================
     public function store(Request $request)
     {
+        // Ensure the farmer object exists before trying to access its ID
+        $farmer = $request->user()->farmer;
+
+        if (!$farmer) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'User is not registered as a farmer.'
+            ], 403);
+        }
+
+        // 1. LOG: Log the incoming request data before validation
+        Log::info('Incoming Livestock Data:', $request->all());
+
         $validator = Validator::make($request->all(), [
             'species_id' => 'required|exists:species,id',
             'breed_id' => 'required|exists:breeds,id',
-            'tag_number' => 'required|string|max:50|unique:livestock,tag_number',
+
+            // ⭐ THE FIX: Use Rule::unique to enforce uniqueness scoped to the farmer_id
+            'tag_number' => [
+                'required',
+                'string',
+                'max:50',
+                Rule::unique('livestock', 'tag_number')->where(function ($query) use ($farmer) {
+                    return $query->where('farmer_id', $farmer->id);
+                }),
+            ],
+
             'name' => 'nullable|string|max:100',
             'sex' => 'required|in:Male,Female',
             'date_of_birth' => 'required|date|before:today',
@@ -106,13 +131,33 @@ class LivestockController extends Controller
         ]);
 
         if ($validator->fails()) {
+            // 2. LOG: Log the validation errors when validation fails
+            Log::error('Livestock Validation Failed:', $validator->errors()->toArray());
+
             return response()->json([
                 'status' => 'error',
                 'errors' => $validator->errors()
             ], 422);
         }
 
-        $animal = $request->user()->farmer->livestock()->create($request->all());
+        // 3. LOG: Log successful validation before creation
+        Log::info('Livestock Validation Successful. Attempting creation.');
+
+        // Prepare data, ensuring farmer_id is automatically added
+        $data = array_merge($request->all(), [
+            'farmer_id' => $farmer->id,
+        ]);
+
+        // This line correctly relates the animal to the authenticated farmer
+        // Alternatively, you can use the relationship method:
+        // $animal = $farmer->livestock()->create($request->all()); // This assumes farmer_id is NOT in $request->all()
+
+        // Since your existing code uses the relationship:
+        $animal = $farmer->livestock()->create($request->all());
+        // (This line is correct because Laravel automatically sets the foreign key 'farmer_id')
+
+        // 4. LOG: Log successful creation
+        Log::info('Livestock created successfully:', ['animal_id' => $animal->animal_id]);
 
         return response()->json([
             'status' => 'success',
@@ -120,6 +165,7 @@ class LivestockController extends Controller
             'data' => $animal->load('species', 'breed')
         ], 201);
     }
+
 
     // =================================================================
     // UPDATE: Edit animal
@@ -169,9 +215,11 @@ class LivestockController extends Controller
     {
         $animal = $request->user()->farmer->livestock()->findOrFail($animal_id);
 
-        if ($animal->milkYields()->exists() ||
+        if (
+            $animal->milkYields()->exists() ||
             $animal->offspringAsDam()->exists() ||
-            $animal->offspringAsSire()->exists()) {
+            $animal->offspringAsSire()->exists()
+        ) {
             return response()->json([
                 'status' => 'error',
                 'message' => 'Cannot delete animal with milk records or offspring'

@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Facades\Log;
 
 class FarmerController extends Controller
 {
@@ -65,35 +66,68 @@ class FarmerController extends Controller
         }
     }
 
-    /**
-     * POST /api/v1/farmer/register
-     * Complete farmer registration (after user signup)
-     */
-    public function register(Request $request)
+     public function register(Request $request)
     {
         try {
             $user = $request->user();
 
+            Log::info('Farmer registration attempt', [
+                'user_id' => $user->id,
+                'user_email' => $user->email,
+                'has_existing_profile' => $user->farmer !== null,
+            ]);
+
+            // ⭐ CHECK IF FARMER PROFILE ALREADY EXISTS
             if ($user->farmer) {
+                Log::warning('Farmer profile already exists', [
+                    'user_id' => $user->id,
+                    'farmer_id' => $user->farmer->id,
+                ]);
+
+                // ⭐ Return 409 with existing profile data
                 return response()->json([
                     'status' => 'error',
-                    'message' => 'Farmer profile already exists.'
+                    'message' => 'Farmer profile already exists.',
+                    'data' => [
+                        'farmer' => $user->farmer->load('location'),
+                        'user' => [
+                            'id' => $user->id,
+                            'firstname' => $user->firstname,
+                            'lastname' => $user->lastname,
+                            'email' => $user->email,
+                            'phone_number' => $user->phone_number,
+                            'role' => $user->role,
+                            'has_completed_details' => true, // ⭐ IMPORTANT
+                            'primary_location_id' => $user->farmer->location_id,
+                        ]
+                    ]
                 ], 409);
             }
 
             $validated = $request->validate([
                 'farm_name'         => 'required|string|max:100',
-                'farm_purpose'      => 'required|string|in:Dairy,Beef,Mixed,Other',
+                'farm_purpose'      => 'required|string|in:Milk,Meat,Mixed,Other',
                 'total_land_acres'  => 'required|numeric|min:0.1|max:10000',
                 'years_experience'  => 'required|integer|min:0|max:70',
                 'location_id'       => 'required|exists:locations,id',
                 'profile_photo'     => 'nullable|image|mimes:jpg,jpeg,png|max:5048',
             ]);
 
+            Log::info('Farmer registration validation passed', [
+                'user_id' => $user->id,
+                'farm_name' => $validated['farm_name'],
+                'location_id' => $validated['location_id'],
+            ]);
+
             $photoPath = null;
             if ($request->hasFile('profile_photo')) {
-                $path = $request->file('profile_photo')->store('farmers/photos', 'public');
-                $validated['profile_photo'] = $path;
+                $photoPath = $request->file('profile_photo')->store('farmers/photos', 'public');
+                $validated['profile_photo'] = $photoPath;
+
+                Log::info('Profile photo uploaded', [
+                    'user_id' => $user->id,
+                    'photo_path' => $photoPath,
+                ]);
             }
 
             $farmer = DB::transaction(function () use ($user, $validated, $photoPath) {
@@ -107,19 +141,48 @@ class FarmerController extends Controller
                 ]);
             });
 
+            Log::info('Farmer profile created successfully', [
+                'user_id' => $user->id,
+                'farmer_id' => $farmer->id,
+            ]);
+
             return response()->json([
                 'status' => 'success',
                 'message' => 'Farmer profile created successfully!',
-                'data' => $farmer->load('location')
+                'data' => [
+                    'farmer' => $farmer->load('location'),
+                    'user' => [
+                        'id' => $user->id,
+                        'firstname' => $user->firstname,
+                        'lastname' => $user->lastname,
+                        'email' => $user->email,
+                        'phone_number' => $user->phone_number,
+                        'role' => $user->role,
+                        'has_completed_details' => true, // ⭐ IMPORTANT
+                        'primary_location_id' => $validated['location_id'],
+                    ]
+                ]
             ], 201);
 
         } catch (ValidationException $e) {
+            Log::warning('Farmer registration validation failed', [
+                'user_id' => $request->user()->id ?? null,
+                'errors' => $e->errors(),
+            ]);
+
             return response()->json([
                 'status' => 'error',
                 'message' => 'Validation failed.',
                 'errors' => $e->errors()
             ], 422);
+
         } catch (\Exception $e) {
+            Log::error('Farmer registration failed', [
+                'user_id' => $request->user()->id ?? null,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
             return response()->json([
                 'status' => 'error',
                 'message' => 'Failed to register farmer.',
@@ -127,6 +190,7 @@ class FarmerController extends Controller
             ], 500);
         }
     }
+
 
     /**
      * PUT /api/v1/farmer/profile

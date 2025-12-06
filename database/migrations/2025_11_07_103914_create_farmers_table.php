@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -23,7 +24,7 @@ return new class extends Migration
             $table->string('farm_name', 255)->nullable()
                   ->comment('e.g., Shamba la Mkulima John, Kijiji Farm');
 
-            $table->enum('farm_purpose', ['Dairy', 'Meat', 'Dual Purpose', 'Other'])
+            $table->enum('farm_purpose', ['Milk', 'Meat', 'Mixed', 'Other'])
                   ->default('Other')
                   ->comment('Primary cattle farming purpose');
 
@@ -38,6 +39,10 @@ return new class extends Migration
 
             $table->unsignedTinyInteger('years_experience')->nullable()
                   ->comment('Years in cattle farming (0-100)');
+
+            // ⭐ MISSING COLUMN ADDED HERE ⭐
+            $table->string('profile_photo', 255)->nullable()
+                  ->comment('Path to farmer\'s profile photo in storage');
 
             $table->timestamp('created_at')
                   ->default(DB::raw('CURRENT_TIMESTAMP'));

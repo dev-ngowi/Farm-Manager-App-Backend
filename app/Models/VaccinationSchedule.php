@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Carbon\Carbon;
 
 class VaccinationSchedule extends Model
@@ -15,9 +16,16 @@ class VaccinationSchedule extends Model
     protected $primaryKey = 'schedule_id';
 
     protected $fillable = [
+        // Vet Planning Fields
         'animal_id', 'vaccine_name', 'disease_prevented',
-        'scheduled_date', 'status', 'reminder_sent',
-        'vet_id', 'completed_date', 'action_id', 'notes'
+        'scheduled_date', 'vet_id', 'action_id', 'notes',
+        'batch_number',
+        'vet_action_id',
+
+        // Execution/Farmer Fields
+        'status', 'reminder_sent',
+        'completed_date',
+        'administered_by_user_id',
     ];
 
     protected $casts = [
@@ -41,31 +49,40 @@ class VaccinationSchedule extends Model
 
     public function vetAction(): BelongsTo
     {
-        return $this->belongsTo(VetAction::class, 'action_id');
+        // Link to the VetAction that *created* this schedule
+        return $this->belongsTo(VetAction::class, 'vet_action_id');
     }
 
+    // Indirect link to Farmer through the animal
     public function farmer()
     {
-        return $this->animal()->first()?->farmer();
+        // Assuming Livestock model has a belongsTo relationship to Farmer
+        return $this->animal->farmer;
     }
 
+    // User who administered the vaccine (can be Farmer or Farm Manager)
+    public function administeredBy(): BelongsTo
+    {
+        // Assuming your users are stored in the 'users' table
+        return $this->belongsTo(User::class, 'administered_by_user_id');
+    }
+
+
     // ========================================
-    // BOOT: Auto-mark missed + send reminders
+    // BOOT: Auto-mark missed
     // ========================================
     protected static function booted()
     {
         static::saving(function ($schedule) {
-            if ($schedule->status === 'Pending' && $schedule->scheduled_date < today()) {
-                $schedule->status = 'Missed';
+            // Only auto-mark missed if the status is 'Pending' and the scheduled date has passed.
+            if ($schedule->isDirty('scheduled_date') || $schedule->isDirty('status')) {
+                if ($schedule->status === 'Pending' && $schedule->scheduled_date < today()) {
+                    $schedule->status = 'Missed';
+                }
             }
         });
 
-        static::created(function ($schedule) {
-            if ($schedule->scheduled_date->diffInDays(today(), false) <= 3 && !$schedule->reminder_sent) {
-                // Trigger SMS/Notification (you can dispatch job here)
-                // dispatch(new SendVaccineReminder($schedule));
-            }
-        });
+        // Simplified the reminder logic here; complex reminder dispatch is best handled by an Observer or Job Dispatch
     }
 
     // ========================================
@@ -93,9 +110,17 @@ class VaccinationSchedule extends Model
         return $query->whereHas('animal.farmer', fn($q) => $q->where('id', $farmerId));
     }
 
+    // The 'due or overdue' scope is critical for the farmer dashboard/app view
+    public function scopeDueOrOverdue($query)
+    {
+        return $query->where('scheduled_date', '<=', today())
+                     ->whereIn('status', ['Pending', 'Missed']);
+    }
+
     // ========================================
-    // ACCESSORS
+    // ACCESSORS (Unchanged but relying on new fields)
     // ========================================
+
     public function getStatusSwahiliAttribute(): string
     {
         return match ($this->status) {
@@ -155,23 +180,31 @@ class VaccinationSchedule extends Model
         return "CHANJO: $animal atachanjwa $disease tarehe $date. Tafadhali jiandae.";
     }
 
-    public function appointments()
-{
-    return $this->hasMany(VetAppointment::class, 'vet_id');
-}
+    // ========================================
+    // AUXILIARY RELATIONSHIPS (Vet-Centric)
+    // Note: These relationships should ideally be on the Veterinarian model,
+    // but they are defined here for convenience using the 'vet_id' foreign key.
+    // ========================================
+    public function appointments(): HasMany
+    {
+        // Links this schedule to all appointments made by the linked Vet (vet_id)
+        // Table: vet_appointments, Foreign Key: vet_id
+        return $this->hasMany(VetAppointment::class, 'vet_id', 'vet_id');
+    }
 
-public function todayAppointments()
-{
-    return $this->appointments()->today();
-}
+    public function todayAppointments()
+    {
+        return $this->appointments()->whereDate('appointment_date', today());
+    }
 
-public function chatConversations()
-{
-    return $this->hasMany(VetChatConversation::class, 'vet_id');
-}
+    public function chatConversations(): HasMany
+    {
+        // Table: vet_chat_conversations, Foreign Key: vet_id
+        return $this->hasMany(VetChatConversation::class, 'vet_id', 'vet_id');
+    }
 
-public function activeChats()
-{
-    return $this->chatConversations()->active();
-}
+    public function activeChats()
+    {
+        return $this->chatConversations()->where('status', 'Active');
+    }
 }

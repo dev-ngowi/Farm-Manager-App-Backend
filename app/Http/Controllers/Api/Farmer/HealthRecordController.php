@@ -4,19 +4,136 @@ namespace App\Http\Controllers\Api\Farmer;
 
 use App\Http\Controllers\Controller;
 use App\Models\HealthReport;
-use App\Models\HealthDiagnosis;
 use App\Models\HealthTreatment;
 use App\Models\Livestock;
+use App\Models\Prescription; // Added
+use App\Models\VaccinationSchedule; // Added
+use App\Models\VetAppointment; // Added
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Exports\HealthReportExport;
 use Maatwebsite\Excel\Facades\Excel;
+use Carbon\Carbon; // Added
 
 class HealthRecordController extends Controller
 {
+
+    // =================================================================
+    // DASHBOARD: Consolidated Health & Vet Activity Summary for Farmer
+    // =================================================================
+    public function dashboard(Request $request)
+    {
+        $farmerId = $request->user()->farmer->id;
+
+        // 1. Core Health Summary (KPIs)
+        $summary = [
+            'total_reports' => HealthReport::where('farmer_id', $farmerId)->count(),
+            'active_cases' => HealthReport::where('farmer_id', $farmerId)->active()->count(),
+            'emergencies' => HealthReport::where('farmer_id', $farmerId)->emergency()->count(),
+            'pending_diagnosis' => HealthReport::where('farmer_id', $farmerId)->where('status', 'Pending Diagnosis')->count(),
+            'under_treatment' => HealthReport::where('farmer_id', $farmerId)->where('status', 'Under Treatment')->count(),
+        ];
+
+        // 2. Recent Issues/Reports (HealthReports)
+        $recentIssues = HealthReport::where('farmer_id', $farmerId)
+            ->with(['animal' => fn($q) => $q->select('animal_id', 'tag_number', 'name')])
+            ->active() // Only show cases that are not recovered/deceased
+            ->orderByDesc('report_date')
+            ->take(5)
+            ->get(['health_id', 'animal_id', 'report_date', 'symptoms', 'priority', 'status']);
+
+        // 3. Alerts (Emergencies & Overdue Follow-ups)
+        $alerts = $this->getAlertsData($farmerId);
+
+        // 4. Vet Activity Summary (from separate method)
+        $vetActivity = $this->getVetActivityData($farmerId);
+
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'summary' => $summary,
+                'recent_issues' => $recentIssues,
+                'alerts' => $alerts,
+                'vet_activity' => $vetActivity,
+            ]
+        ]);
+    }
+
+    // =================================================================
+    // VET ACTIVITY DATA (Helper function for dashboard)
+    // =================================================================
+    private function getVetActivityData($farmerId)
+    {
+        // Upcoming Appointments (Today/Next 7 days)
+        $upcomingAppointments = VetAppointment::where('farmer_id', $farmerId)
+            ->where('status', 'Scheduled')
+            ->where('appointment_date', '>=', today())
+            ->where('appointment_date', '<=', today()->addDays(7))
+            ->with(['veterinarian:id,name,phone', 'animal:animal_id,tag_number'])
+            ->orderBy('appointment_date')
+            ->take(3)
+            ->get();
+
+        // Active Prescriptions (Currently being administered)
+        $activePrescriptions = Prescription::where('farmer_id', $farmerId)
+            ->where('prescription_status', 'Active')
+            ->where('end_date', '>=', today())
+            ->with(['animal:animal_id,tag_number', 'veterinarian:id,name'])
+            ->orderBy('end_date', 'asc')
+            ->take(5)
+            ->get(['prescription_id', 'animal_id', 'drug_name_custom', 'end_date', 'dosage', 'frequency']);
+
+        // Upcoming Vaccinations (Next 30 days)
+        $upcomingVaccinations = VaccinationSchedule::whereHas('animal', fn($q) => $q->where('farmer_id', $farmerId))
+            ->upcoming()
+            ->where('scheduled_date', '<=', today()->addDays(30))
+            ->with(['animal:animal_id,tag_number'])
+            ->orderBy('scheduled_date', 'asc')
+            ->take(5)
+            ->get(['schedule_id', 'animal_id', 'vaccine_name', 'scheduled_date', 'disease_prevented']);
+
+        return [
+            'upcoming_appointments' => $upcomingAppointments,
+            'active_prescriptions' => $activePrescriptions,
+            'upcoming_vaccinations' => $upcomingVaccinations,
+        ];
+    }
+
+    // =================================================================
+    // ALERTS: Emergency + Overdue follow-ups
+    // =================================================================
+    public function alerts(Request $request)
+    {
+        $farmerId = $request->user()->farmer->id;
+        $alertsData = $this->getAlertsData($farmerId);
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $alertsData
+        ]);
+    }
+
+    private function getAlertsData($farmerId)
+    {
+        $emergencies = HealthReport::where('farmer_id', $farmerId)
+            ->emergency()
+            ->with('animal:animal_id,tag_number,name')
+            ->get(['health_id', 'animal_id', 'report_date', 'symptoms', 'priority']);
+
+        $overdue = HealthTreatment::overdueFollowUp()
+            ->whereHas('healthReport', fn($q) => $q->where('farmer_id', $farmerId))
+            ->with(['healthReport.animal:animal_id,tag_number,name'])
+            ->get(['treatment_id', 'follow_up_date', 'drug_name', 'diagnosis_id']);
+
+        return [
+            'emergencies' => $emergencies,
+            'overdue_treatments' => $overdue,
+            'total_alerts' => $emergencies->count() + $overdue->count(),
+        ];
+    }
 
     // =================================================================
     // INDEX: List all health reports for farmer
@@ -194,50 +311,61 @@ class HealthRecordController extends Controller
     }
 
     // =================================================================
-    // SUMMARY: Dashboard stats
+    // TREATMENTS: List all treatments for farmer
     // =================================================================
-    public function summary(Request $request)
+    public function treatmentsIndex(Request $request)
     {
         $farmerId = $request->user()->farmer->id;
 
+        $query = HealthTreatment::whereHas('healthReport', fn($q) => $q->where('farmer_id', $farmerId))
+            ->with([
+                // Get animal info through the healthReport relationship
+                'healthReport.animal:animal_id,tag_number,name,sex',
+                // Get the vet who made the diagnosis (and thus the treatment)
+                'diagnosis.vet:id,name,phone'
+            ])
+            ->orderByDesc('treatment_date');
+
+        // Filters for list
+        if ($request->boolean('overdue')) {
+            $query->overdueFollowUp(); // Scope from HealthTreatment Model
+        }
+
+        $treatments = $query->paginate(20);
+
         return response()->json([
             'status' => 'success',
-            'data' => [
-                'total_reports' => HealthReport::where('farmer_id', $farmerId)->count(),
-                'active_cases' => HealthReport::where('farmer_id', $farmerId)->active()->count(),
-                'emergencies' => HealthReport::where('farmer_id', $farmerId)->emergency()->count(),
-                'today_reports' => HealthReport::where('farmer_id', $farmerId)->today()->count(),
-                'recovered' => HealthReport::where('farmer_id', $farmerId)->where('status', 'Recovered')->count(),
-                'deceased' => HealthReport::where('farmer_id', $farmerId)->where('status', 'Deceased')->count(),
-                'pending_diagnosis' => HealthReport::where('farmer_id', $farmerId)->where('status', 'Pending Diagnosis')->count(),
-            ]
+            'data' => $treatments
         ]);
     }
 
     // =================================================================
-    // ALERTS: Emergency + Overdue follow-ups
+    // SHOW TREATMENT: Single treatment detail
     // =================================================================
-    public function alerts(Request $request)
+    public function treatmentShow(Request $request, $treatment_id)
     {
-        $emergencies = HealthReport::where('farmer_id', $request->user()->farmer->id)
-            ->emergency()
-            ->with('animal')
-            ->get();
-
-        $overdue = HealthTreatment::overdueFollowUp()
+        $treatment = HealthTreatment::where('treatment_id', $treatment_id)
             ->whereHas('healthReport', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
-            ->with(['healthReport.animal', 'diagnosis'])
-            ->get();
+            ->with([
+                'healthReport.animal:animal_id,tag_number,name,sex,health_id', // Add fields needed for report link
+                'healthReport:health_id,status,symptoms', // Include basic report fields
+                'diagnosis.vet:id,name,phone',
+            ])
+            ->firstOrFail();
 
         return response()->json([
             'status' => 'success',
-            'data' => [
-                'emergencies' => $emergencies,
-                'overdue_treatments' => $overdue,
-                'total_alerts' => $emergencies->count() + $overdue->count(),
-            ]
+            'data' => $treatment
         ]);
     }
+
+    // =================================================================
+    // SUMMARY: Dashboard stats (REMOVED: consolidated into dashboard method)
+    // =================================================================
+    // public function summary(Request $request)
+    // {
+    //     // ... code here
+    // }
 
     // =================================================================
     // DROPDOWNS: For health form
@@ -248,7 +376,8 @@ class HealthRecordController extends Controller
             'status' => 'success',
             'data' => [
                 'animals' => Livestock::where('farmer_id', $request->user()->farmer->id)
-                    ->select('animal_id as value',
+                    ->select(
+                        'animal_id as value',
                         DB::raw("CONCAT(tag_number, ' - ', COALESCE(name, 'No Name')) as label")
                     )
                     ->active()
@@ -315,24 +444,24 @@ class HealthRecordController extends Controller
         );
     }
 
-// =================================================================
-// DOWNLOAD PDF ALL: All reports (multi-page)
-// =================================================================
-public function downloadAllPdf(Request $request)
-{
-    $reports = HealthReport::where('farmer_id', $request->user()->farmer->id)
-        ->with(['animal', 'diagnoses', 'media'])
-        ->orderByDesc('report_date')
-        ->get();
+    // =================================================================
+    // DOWNLOAD PDF ALL: All reports (multi-page)
+    // =================================================================
+    public function downloadAllPdf(Request $request)
+    {
+        $reports = HealthReport::where('farmer_id', $request->user()->farmer->id)
+            ->with(['animal', 'diagnoses', 'media'])
+            ->orderByDesc('report_date')
+            ->get();
 
-    $farmer = $request->user()->farmer;
+        $farmer = $request->user()->farmer;
 
-    $pdf = Pdf::loadView('pdf.health-report-all', compact('reports', 'farmer'))
-        ->setPaper('a4', 'portrait')
-        ->setOptions(['defaultFont' => 'DejaVu Sans']);
+        $pdf = Pdf::loadView('pdf.health-report-all', compact('reports', 'farmer'))
+            ->setPaper('a4', 'portrait')
+            ->setOptions(['defaultFont' => 'DejaVu Sans']);
 
-    $filename = "Ripoti-Zote-Za-Afya-" . now()->format('Y-m-d') . ".pdf";
+        $filename = "Ripoti-Zote-Za-Afya-" . now()->format('Y-m-d') . ".pdf";
 
-    return $pdf->download($filename);
-}
+        return $pdf->download($filename);
+    }
 }

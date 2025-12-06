@@ -2,23 +2,18 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Builder;
 
 class Location extends Model
 {
     use HasFactory;
 
-    /**
-     * The table associated with the model.
-     */
     protected $table = 'locations';
 
-    /**
-     * The attributes that are mass assignable.
-     */
     protected $fillable = [
         'region_id',
         'district_id',
@@ -29,18 +24,15 @@ class Location extends Model
         'address_details',
     ];
 
-    /**
-     * The attributes that should be cast.
-     */
     protected $casts = [
-        'longitude' => 'float',
-        'latitude'  => 'float',
+        'longitude'  => 'float',
+        'latitude'   => 'float',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
 
     // ========================================
-    // Relationships
+    // RELATIONSHIPS
     // ========================================
 
     public function region(): BelongsTo
@@ -62,9 +54,8 @@ class Location extends Model
     {
         return $this->belongsTo(Street::class)->withDefault();
     }
-    // app/Models/Location.php
 
-    public function users()
+    public function users(): BelongsToMany
     {
         return $this->belongsToMany(User::class, 'user_locations')
                     ->using(UserLocation::class)
@@ -78,7 +69,7 @@ class Location extends Model
     }
 
     // ========================================
-    // Scopes
+    // SCOPES
     // ========================================
 
     public function scopeWithAllRelations(Builder $query): Builder
@@ -96,28 +87,15 @@ class Location extends Model
         return $query->where('district_id', $districtId);
     }
 
-    public function scopeInWard(Builder $query, $wardId): Builder
-    {
-        return $query->where('ward_id', $wardId);
-    }
-
-    public function scopeInStreet(Builder $query, $streetId): Builder
-    {
-        return $query->where('street_id', $streetId);
-    }
-
     public function scopeHasCoordinates(Builder $query): Builder
     {
         return $query->whereNotNull('latitude')->whereNotNull('longitude');
     }
 
     // ========================================
-    // Accessors
+    // ACCESSORS
     // ========================================
 
-    /**
-     * Full formatted address (ready for display or Google Maps)
-     */
     public function getFullAddressAttribute(): string
     {
         $parts = array_filter([
@@ -132,9 +110,6 @@ class Location extends Model
         return implode(', ', $parts) ?: 'Address not specified';
     }
 
-    /**
-     * Short address (common in profiles)
-     */
     public function getShortAddressAttribute(): string
     {
         $parts = array_filter([
@@ -146,9 +121,6 @@ class Location extends Model
         return implode(' - ', $parts) ?: 'Location not set';
     }
 
-    /**
-     * Google Maps URL
-     */
     public function getGoogleMapsUrlAttribute(): ?string
     {
         if ($this->latitude && $this->longitude) {
@@ -157,20 +129,13 @@ class Location extends Model
         return null;
     }
 
-    /**
-     * Coordinates as array [lat, lng]
-     */
     public function getCoordinatesAttribute(): ?array
     {
-        if ($this->latitude && $this->longitude) {
-            return [$this->latitude, $this->longitude];
-        }
-        return null;
+        return $this->latitude && $this->longitude
+            ? [$this->latitude, $this->longitude]
+            : null;
     }
 
-    /**
-     * Check if location has valid GPS coordinates
-     */
     public function getHasGpsAttribute(): bool
     {
         return !is_null($this->latitude) && !is_null($this->longitude);

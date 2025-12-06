@@ -17,40 +17,45 @@ class BreedingController extends Controller
     // =================================================================
     public function index(Request $request)
     {
-        $query = $request->user()->farmer->livestock()
-            ->with(['breedingAsDam' => function ($q) {
-                $q->with(['sire' => fn($s) => $s->select('animal_id', 'tag_number', 'name')])
-                  ->withCount(['offspringRecords as live_births' => fn($oc) => $oc->where('health_status', '!=', 'Deceased')])
-                  ->with(['birthRecord', 'latestCheck'])
-                  ->select('breeding_id', 'dam_id', 'sire_id', 'breeding_type', 'breeding_date', 'expected_delivery_date', 'status', 'notes');
-            }])
-            ->whereHas('breedingAsDam');
+        $query = BreedingRecord::query()
+            ->whereHas('dam.farmer', fn($q) => $q->where('farmer_id', $request->user()->farmer->id))
+            ->with([
+                'dam' => fn($q) => $q->select('animal_id', 'tag_number', 'name', 'species_id'),
+                'sire' => fn($q) => $q->select('animal_id', 'tag_number', 'name'),
+                'birthRecord',
+                'latestCheck'
+            ])
+            ->withCount([
+                'offspringRecords as live_births' => fn($q) => $q->where('health_status', '!=', 'Deceased')
+            ])
+            ->select('id', 'dam_id', 'sire_id', 'breeding_type', 'breeding_date', 'expected_delivery_date', 'status', 'notes');
 
-        // Filters
+        // Apply filters directly on BreedingRecord (much faster)
         if ($request->filled('status')) {
-            $query->whereHas('breedingAsDam', fn($q) => $q->where('status', $request->status));
+            $query->where('status', $request->status);
         }
         if ($request->filled('breeding_type')) {
-            $query->whereHas('breedingAsDam', fn($q) => $q->where('breeding_type', $request->breeding_type));
+            $query->where('breeding_type', $request->breeding_type);
         }
         if ($request->boolean('pregnant')) {
-            $query->whereHas('breedingAsDam', fn($q) => $q->pregnant());
+            $query->pregnant();
         }
         if ($request->boolean('due_soon')) {
-            $query->whereHas('breedingAsDam', fn($q) => $q->dueSoon(14));
+            $query->dueSoon(14);
         }
         if ($request->boolean('overdue')) {
-            $query->whereHas('breedingAsDam', fn($q) => $q->overdue());
+            $query->overdue();
         }
         if ($request->filled('sire_id')) {
-            $query->whereHas('breedingAsDam', fn($q) => $q->where('sire_id', $request->sire_id));
+            $query->where('sire_id', $request->sire_id);
         }
 
-        $breedings = $query->get()->pluck('breedingAsDam')->flatten();
+        $breedings = $query->get();
 
+        // Meta can still be calculated from collection (or better: use DB aggregates)
         return response()->json([
             'status' => 'success',
-            'data' => $breedings->values(),
+            'data' => $breedings,
             'meta' => [
                 'total' => $breedings->count(),
                 'pregnant' => $breedings->where('status', 'Confirmed Pregnant')->count(),
@@ -162,8 +167,13 @@ class BreedingController extends Controller
         }
 
         $breeding->update($request->only([
-            'sire_id', 'ai_semen_code', 'ai_bull_name',
-            'breeding_date', 'expected_delivery_date', 'status', 'notes'
+            'sire_id',
+            'ai_semen_code',
+            'ai_bull_name',
+            'breeding_date',
+            'expected_delivery_date',
+            'status',
+            'notes'
         ]));
 
         return response()->json([
