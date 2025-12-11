@@ -172,66 +172,127 @@ class LivestockController extends Controller
     // =================================================================
     public function update(Request $request, $animal_id)
     {
-        $animal = $request->user()->farmer->livestock()->findOrFail($animal_id);
+        $farmer = $request->user()->farmer;
 
+        // 1. Authorization & Fetch
+        $animal = $farmer->livestock()->find($animal_id);
+
+        if (!$animal) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Animal not found or does not belong to this farmer.'
+            ], 404);
+        }
+
+        // 2. Validation
         $validator = Validator::make($request->all(), [
-            'tag_number' => 'string|max:50|unique:livestock,tag_number,' . $animal_id . ',animal_id',
-            'name' => 'nullable|string|max:100',
-            'current_weight_kg' => 'nullable|numeric|min:0',
-            'status' => 'in:Active,Sold,Dead,Stolen',
-            'disposal_date' => 'nullable|date',
-            'disposal_reason' => 'nullable|string|max:255',
+            'species_id' => 'required|exists:species,id',
+            'breed_id' => [
+                'nullable',
+                // FIX: Check if breed_id is valid for the species_id provided in the request
+                Rule::exists('breeds', 'id')->where(function ($query) use ($request) {
+                     return $query->where('species_id', $request->input('species_id'));
+                }),
+            ],
+            'tag_number' => [
+                'required',
+                'string',
+                'max:255',
+                // Unique rule, excluding the current animal's tag number
+                Rule::unique('livestock', 'tag_number')->ignore($animal->animal_id, 'animal_id')->where('farmer_id', $farmer->id),
+            ],
+            'name' => 'nullable|string|max:255',
+            'sex' => 'required|in:Male,Female,Unknown',
+            'date_of_birth' => 'required|date',
+            'weight_at_birth_kg' => 'required|numeric|min:0',
+            'status' => 'required|in:Active,Sold,Dead,Stolen',
             'notes' => 'nullable|string',
+            // Optional purchase details
+            'purchase_date' => 'nullable|date',
+            'purchase_cost' => 'nullable|numeric|min:0',
+            'source' => 'nullable|string|max:255',
+            // Parent IDs must exist and belong to the same farmer
+            'sire_id' => 'nullable|exists:livestock,animal_id',
+            'dam_id' => 'nullable|exists:livestock,animal_id',
         ]);
 
         if ($validator->fails()) {
+            Log::error('Livestock Update Validation Failed:', $validator->errors()->toArray());
             return response()->json([
                 'status' => 'error',
                 'errors' => $validator->errors()
             ], 422);
         }
+        
+        // ⭐ THE FIX: Get the validated data array from the Validator instance
+        $validatedData = $validator->validated();
 
-        $animal->update($request->only([
-            'tag_number',
-            'name',
-            'current_weight_kg',
-            'status',
-            'disposal_date',
-            'disposal_reason',
-            'notes'
-        ]));
+        // 3. Update & Save
+        try {
+            DB::beginTransaction();
+            // ⭐ Use the validated data array
+            $animal->update($validatedData); 
+            DB::commit();
 
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Animal updated successfully',
-            'data' => $animal->load('species', 'breed')
-        ], 200);
+            // 4. Return the updated animal (eager-loaded as in show method)
+            $animal->load([
+                'species' => fn($q) => $q->select('id', 'species_name'),
+                'breed' => fn($q) => $q->select('id', 'breed_name', 'purpose'),
+                'sire' => fn($q) => $q->select('animal_id', 'tag_number', 'name'),
+                'dam' => fn($q) => $q->select('animal_id', 'tag_number', 'name'),
+                'offspringAsDam' => fn($q) => $q->take(5),
+                'offspringAsSire' => fn($q) => $q->take(5),
+            ])
+            ->loadCount(['milkYields', 'offspringAsDam', 'offspringAsSire', 'income', 'expenses']);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Livestock details updated successfully.',
+                'data' => $animal
+            ], 200);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Livestock Update Failed: ' . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to update livestock details.'
+            ], 500);
+        }
     }
 
     // =================================================================
-    // DESTROY: Delete animal (with safety checks)
+    // DESTROY: Delete an animal
     // =================================================================
     public function destroy(Request $request, $animal_id)
     {
-        $animal = $request->user()->farmer->livestock()->findOrFail($animal_id);
+        $farmer = $request->user()->farmer;
 
-        if (
-            $animal->milkYields()->exists() ||
-            $animal->offspringAsDam()->exists() ||
-            $animal->offspringAsSire()->exists()
-        ) {
+        // 1. Authorization & Fetch
+        $animal = $farmer->livestock()->find($animal_id);
+
+        if (!$animal) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Cannot delete animal with milk records or offspring'
-            ], 400);
+                'message' => 'Animal not found or does not belong to this farmer.'
+            ], 404);
         }
 
-        $animal->delete();
+        // 2. Delete (Can also check for related records before deleting)
+        try {
+            $animal->delete();
 
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Animal removed successfully'
-        ], 200);
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Livestock deleted successfully.'
+            ], 200);
+        } catch (\Exception $e) {
+            Log::error('Livestock Delete Failed: ' . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to delete livestock.'
+            ], 500);
+        }
     }
 
     // =================================================================

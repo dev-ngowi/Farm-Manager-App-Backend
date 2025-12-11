@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\Admin\ResearcherApprovalController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\Auth\UserController;
@@ -103,7 +104,7 @@ Route::prefix('v1')->group(function () {
             // Fetch and Update the authenticated researcher's profile details
             Route::get('profile', [ReseacherProfileController::class, 'show'])->name('profile.show');
             Route::put('profile', [ReseacherProfileController::class, 'update'])->name('profile.update');
-
+            Route::get('/approval-status', [ReseacherProfileController::class, 'checkApprovalStatus']);
             // Helper endpoint to fetch allowed research purposes
             Route::get('purposes', [ReseacherProfileController::class, 'getResearchPurposes'])->name('purposes');
         });
@@ -117,9 +118,29 @@ Route::prefix('v1')->group(function () {
             Route::get('/summary', [LivestockController::class, 'summary']);
             Route::get('/dropdowns', [LivestockController::class, 'dropdowns']);
             Route::get('/{animal_id}', [LivestockController::class, 'show']);
+
             Route::put('/{animal_id}', [LivestockController::class, 'update']);
+            Route::patch('/{animal_id}', [LivestockController::class, 'update']); // add this line
+
             Route::delete('/{animal_id}', [LivestockController::class, 'destroy']);
         });
+
+        /////Finance
+        Route::middleware('auth:sanctum')->prefix('finance/income')->group(function () {
+
+    Route::get('/', [IncomeController::class, 'index']);                    // List
+    Route::post('/', [IncomeController::class, 'store']);                   // Create
+    Route::get('/{income_id}', [IncomeController::class, 'show']);        // Show
+    Route::put('/{income_id}', [IncomeController::class, 'update']);       // Update
+    Route::delete('/{income_id}', [IncomeController::class, 'destroy']);    // Delete
+
+    Route::get('/summary', [IncomeController::class, 'summary']);
+    Route::get('/dropdowns', [IncomeController::class, 'dropdowns']);
+    Route::get('/alerts', [IncomeController::class, 'alerts']);
+
+    Route::get('/{income_id}/receipt-pdf', [IncomeController::class, 'downloadPdf']);
+    Route::get('/category/{category_id}/report-pdf', [IncomeController::class, 'categoryReportPdf']);
+});
 
         // ========================================
         // BREEDING MODULE - FIXED & WORKING!
@@ -154,6 +175,13 @@ Route::prefix('v1')->group(function () {
                 Route::get('/{id}', [InseminationController::class, 'show']);
                 Route::put('/{id}', [InseminationController::class, 'update']);
                 Route::delete('/{id}', [InseminationController::class, 'destroy']);
+                // ⭐ NEW: Available resources routes (required by Flutter app)
+                Route::get('animals/available', [InseminationController::class, 'availableAnimals']);
+                Route::get('semen/available', [InseminationController::class, 'availableSemen']);
+
+                // ⭐ OPTIONAL: Specific dam/sire routes (if you want more granular control)
+                Route::get('dams/available', [InseminationController::class, 'availableDams']);
+                Route::get('sires/available', [InseminationController::class, 'availableSires']);
             });
 
             // Pregnancy Checks
@@ -476,6 +504,25 @@ Route::prefix('v1')->group(function () {
             Route::post('/', [LocationController::class, 'storeLocation']);
 
             Route::get('/{id}', [LocationController::class, 'showLocation']);
+        });
+
+
+
+        //*******************************************ADMIN********************************
+        // Admin Routes for Researcher Approval
+        Route::prefix('admin')->group(function () {
+            Route::prefix('researchers')->group(function () {
+                Route::get('/pending', [ResearcherApprovalController::class, 'getPendingResearchers']);
+                Route::get('/approved', [ResearcherApprovalController::class, 'getApprovedResearchers']);
+                Route::get('/declined', [ResearcherApprovalController::class, 'getDeclinedResearchers']);
+
+                // Approval actions
+                Route::post('/{researcherId}/approve', [ResearcherApprovalController::class, 'approveResearcher']);
+                Route::post('/{researcherId}/decline', [ResearcherApprovalController::class, 'declineResearcher']);
+
+                // Statistics
+                Route::get('/stats', [ResearcherApprovalController::class, 'getApprovalStats']);
+            });
         });
     }); // End auth:sanctum
 }); // End v1 prefix

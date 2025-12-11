@@ -13,7 +13,7 @@ return new class extends Migration
 
             // --- PLANNING & PRESCRIPTION (Set by Vet) ---
             $table->foreignId('animal_id')
-                  ->constrained('livestock')
+                  ->constrained('livestock', 'animal_id')
                   ->onDelete('cascade');
 
             $table->foreignId('vet_id')

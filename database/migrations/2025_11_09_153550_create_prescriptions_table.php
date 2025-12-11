@@ -12,7 +12,7 @@ return new class extends Migration
             $table->id('prescription_id');
 
             $table->foreignId('action_id')
-                  ->constrained('vet_actions')
+                  ->constrained('vet_actions', 'action_id')
                   ->onDelete('cascade');
 
             $table->foreignId('animal_id')

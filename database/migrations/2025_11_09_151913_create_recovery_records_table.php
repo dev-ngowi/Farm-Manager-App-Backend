@@ -12,8 +12,8 @@ return new class extends Migration
             $table->id('recovery_id');
 
             $table->foreignId('action_id')
-                  ->constrained('vet_actions')
-                  ->onDelete('cascade');
+      ->constrained('vet_actions', 'action_id')
+      ->onDelete('cascade');
 
             $table->enum('recovery_status', [
                 'Ongoing', 'Improved', 'Fully Recovered',

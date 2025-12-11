@@ -183,4 +183,158 @@ class InseminationController extends Controller
 
         return response()->json(['status' => 'success', 'message' => 'Insemination deleted']);
     }
+
+    /**
+     * ⭐ NEW: Get available animals for breeding (both dams and sires)
+     * 
+     * Returns animals that are:
+     * - Alive and active
+     * - Mature enough for breeding (typically 15+ months)
+     * - Female animals not currently pregnant (for dams)
+     * - Male animals (for sires)
+     * - Belong to the authenticated farmer
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function availableAnimals(Request $request)
+    {
+        $farmerId = $request->user()->farmer->id;
+        
+        // Get minimum breeding age in months (can be adjusted per species)
+        $minBreedingAgeMonths = 15;
+
+        $animals = Livestock::query()
+            ->where('farmer_id', $farmerId)
+            ->where('status', 'Alive') // Only alive animals
+            ->whereRaw('TIMESTAMPDIFF(MONTH, date_of_birth, CURDATE()) >= ?', [$minBreedingAgeMonths])
+            ->where(function ($query) {
+                // For females (dams): exclude currently pregnant ones
+                $query->where(function ($q) {
+                    $q->where('sex', 'Female')
+                        ->whereDoesntHave('inseminationsAsDam', function ($inseminationQuery) {
+                            $inseminationQuery->whereIn('status', ['Pending', 'Confirmed Pregnant'])
+                                ->whereNull('delivery_id'); // No delivery yet
+                        });
+                })
+                // Include all male animals (potential sires)
+                ->orWhere('sex', 'Male');
+            })
+            ->select('animal_id', 'tag_number', 'name', 'sex', 'species_id', 'date_of_birth')
+            ->orderBy('tag_number')
+            ->get()
+            ->map(function ($animal) {
+                return [
+                    'animal_id' => $animal->animal_id,
+                    'tag_number' => $animal->tag_number,
+                    'name' => $animal->name,
+                    'sex' => $animal->sex,
+                    'age_months' => Carbon::parse($animal->date_of_birth)->diffInMonths(now()),
+                ];
+            });
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $animals,
+            'meta' => [
+                'total' => $animals->count(),
+                'females' => $animals->where('sex', 'Female')->count(),
+                'males' => $animals->where('sex', 'Male')->count(),
+            ]
+        ]);
+    }
+
+    /**
+     * ⭐ NEW: Get available semen straws for AI breeding
+     * 
+     * Returns semen inventory that is:
+     * - Not yet used
+     * - Belongs to the authenticated farmer
+     * - Still within viable storage period (optional check)
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function availableSemen(Request $request)
+    {
+        $farmerId = $request->user()->farmer->id;
+
+        $semenStraws = Semen::query()
+            ->where('farmer_id', $farmerId)
+            ->where('used', false) // Only unused straws
+            ->whereNull('insemination_id') // Not yet assigned to any insemination
+            ->select('id', 'straw_code', 'bull_name', 'breed', 'collection_date', 'storage_location')
+            ->orderBy('straw_code')
+            ->get()
+            ->map(function ($semen) {
+                return [
+                    'id' => $semen->id,
+                    'straw_code' => $semen->straw_code,
+                    'bull_name' => $semen->bull_name,
+                    'breed' => $semen->breed ?? 'Not specified',
+                    'collection_date' => $semen->collection_date,
+                    'storage_location' => $semen->storage_location ?? 'Not specified',
+                ];
+            });
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $semenStraws,
+            'meta' => [
+                'total' => $semenStraws->count(),
+            ]
+        ]);
+    }
+
+    /**
+     * ⭐ OPTIONAL: Get animals specifically for dam selection
+     * (Only female animals ready for breeding)
+     */
+    public function availableDams(Request $request)
+    {
+        $farmerId = $request->user()->farmer->id;
+        $minBreedingAgeMonths = 15;
+
+        $dams = Livestock::query()
+            ->where('farmer_id', $farmerId)
+            ->where('status', 'Alive')
+            ->where('sex', 'Female')
+            ->whereRaw('TIMESTAMPDIFF(MONTH, date_of_birth, CURDATE()) >= ?', [$minBreedingAgeMonths])
+            ->whereDoesntHave('inseminationsAsDam', function ($query) {
+                $query->whereIn('status', ['Pending', 'Confirmed Pregnant'])
+                    ->whereNull('delivery_id');
+            })
+            ->select('animal_id', 'tag_number', 'name', 'species_id', 'breed', 'date_of_birth')
+            ->orderBy('tag_number')
+            ->get();
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $dams,
+        ]);
+    }
+
+    /**
+     * ⭐ OPTIONAL: Get animals specifically for sire selection
+     * (Only male animals ready for breeding)
+     */
+    public function availableSires(Request $request)
+    {
+        $farmerId = $request->user()->farmer->id;
+        $minBreedingAgeMonths = 18; // Males typically mature slightly later
+
+        $sires = Livestock::query()
+            ->where('farmer_id', $farmerId)
+            ->where('status', 'Alive')
+            ->where('sex', 'Male')
+            ->whereRaw('TIMESTAMPDIFF(MONTH, date_of_birth, CURDATE()) >= ?', [$minBreedingAgeMonths])
+            ->select('animal_id', 'tag_number', 'name', 'species_id', 'breed', 'date_of_birth')
+            ->orderBy('tag_number')
+            ->get();
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $sires,
+        ]);
+    }
 }
